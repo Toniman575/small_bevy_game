@@ -1,12 +1,15 @@
+//! TODO
+
+#![allow(clippy::multiple_crate_versions)]
+
 use bevy::prelude::*;
 use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_tilemap::prelude::*;
 use bevy_pancam::{PanCam, PanCamPlugin};
 
-fn startup(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-) {
+/// Startup system.
+#[allow(clippy::needless_pass_by_value)]
+fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
     commands
         .spawn(Camera2dBundle::default())
         .insert(PanCam::default());
@@ -23,7 +26,9 @@ fn main() {
             DefaultPlugins.set(ImagePlugin::default_nearest()),
             PanCamPlugin,
             TilemapPlugin,
+            LdtkPlugin,
         ))
         .add_systems(Startup, startup)
+        .insert_resource(LevelSelection::index(0))
         .run();
 }
