@@ -1,0 +1,128 @@
+[package]
+name = "small_bevy_game"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+bevy = "0.13"
+bevy_ecs_tilemap = { git = "https://github.com/StarArawn/bevy_ecs_tilemap/"}
+bevy_ecs_ldtk = { git = "https://github.com/Trouv/bevy_ecs_ldtk.git" }
+bevy_pancam = { git = "https://github.com/Toniman575/bevy_pancam/", branch = "keyboard-movement" }
+
+[features]
+dynamic = ["bevy/dynamic_linking"]
+
+[profile.dev]
+debug = "line-tables-only"
+opt-level = 3
+
+[profile.dev.package."*"]
+codegen-units = 1
+
+[profile.release]
+codegen-units = 1
+lto = true
+
+[lints.rust]
+unsafe_code = "deny"
+# Rust groups.
+future_incompatible = { level = "warn", priority = -1 }
+## Allowed.
+# let_underscore = { level = "warn", priority = -1 }
+rust_2018_compatibility = { level = "warn", priority = -1 }
+rust_2018_idioms = { level = "warn", priority = -1 }
+rust_2021_compatibility = { level = "warn", priority = -1 }
+unused = { level = "warn", priority = -1 }
+# Rust lints.
+## Allowed.
+# box_pointers = "warn"
+deprecated_in_future = "warn"
+ffi_unwind_calls = "warn"
+## Unstable.
+# fuzzy_provenance_casts = "warn"
+## Unstable.
+# lossy_provenance_casts = "warn"
+macro_use_extern_crate = "warn"
+meta_variable_misuse = "warn"
+missing_abi = "warn"
+missing_copy_implementations = "warn"
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+## Unstable.
+# multiple_supertrait_upcastable = "warn"
+## Unstable.
+# must_not_suspend = "warn"
+non_ascii_idents = "warn"
+## Unstable.
+# non_exhaustive_omitted_patterns = "warn"
+single_use_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+## Unstable.
+# unnameable_types = "warn"
+unreachable_pub = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_crate_dependencies = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+## Covered by `#[must_use]`.
+# unused_results = "warn"
+unused_tuple_struct_fields = "warn"
+## Allowed.
+# variant_size_differences = "warn"
+
+[lints.clippy]
+# Clippy groups.
+cargo = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+restriction = { level = "warn", priority = -1 }
+# Allowed Clippy lints.
+arithmetic_side_effects = "allow"
+blanket_clippy_restriction_lints = "allow"
+default_numeric_fallback = "allow"
+else_if_without_else = "allow"
+equatable_if_let = "allow"
+exhaustive_enums = "allow"
+exhaustive_structs = "allow"
+expect_used = "allow"
+explicit_deref_methods = "allow"
+float_arithmetic = "allow"
+future_not_send = "allow"
+implicit_return = "allow"
+integer_division = "allow"
+large_enum_variant = "allow"
+let_underscore_must_use = "allow"
+let_underscore_untyped = "allow"
+missing_inline_in_public_items = "allow"
+missing_trait_methods = "allow"
+mod_module_files = "allow"
+module_name_repetitions = "allow"
+multiple_unsafe_ops_per_block = "allow"
+panic = "allow"
+panic_in_result_fn = "allow"
+partial_pub_fields = "allow"
+pattern_type_mismatch = "allow"
+pub_use = "allow"
+pub_with_shorthand = "allow"
+question_mark_used = "allow"
+redundant_pub_crate = "allow"
+self_named_module_files = "allow"
+semicolon_outside_block = "allow"
+shadow_reuse = "allow"
+shadow_unrelated = "allow"
+similar_names = "allow"
+single_call_fn = "allow"
+std_instead_of_alloc = "allow"
+std_instead_of_core = "allow"
+tests_outside_test_module = "allow"
+unreachable = "allow"
+unseparated_literal_suffix = "allow"
+unwrap_in_result = "allow"
+unwrap_used = "allow"
+wildcard_enum_match_arm = "allow"
+
+[lints.rustdoc]
+all = { level = "warn", priority = -1 }
