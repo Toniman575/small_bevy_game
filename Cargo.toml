@@ -8,7 +8,8 @@ publish = false
 bevy = "0.13"
 bevy_ecs_tilemap = "0.12"
 bevy_ecs_ldtk = "0.9"
-bevy_pancam = "0.11"
+bevy-inspector-egui = "0.24"
+bevy_pancam = { version = "0.11", features = ["bevy_egui"] }
 
 [patch.crates-io]
 bevy_ecs_tilemap = { git = "https://github.com/StarArawn/bevy_ecs_tilemap" }
@@ -61,11 +62,11 @@ missing_docs = "warn"
 non_ascii_idents = "warn"
 ## Unstable.
 # non_exhaustive_omitted_patterns = "warn"
+redundant_lifetimes = "warn"
 single_use_lifetimes = "warn"
 trivial_casts = "warn"
 trivial_numeric_casts = "warn"
-## Unstable.
-# unnameable_types = "warn"
+unnameable_types = "warn"
 unreachable_pub = "warn"
 unsafe_op_in_unsafe_fn = "warn"
 unused_crate_dependencies = "warn"
@@ -74,7 +75,6 @@ unused_lifetimes = "warn"
 unused_qualifications = "warn"
 ## Covered by `#[must_use]`.
 # unused_results = "warn"
-unused_tuple_struct_fields = "warn"
 ## Allowed.
 # variant_size_differences = "warn"
 
