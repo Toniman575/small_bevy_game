@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
-use bevy::prelude::*;
-use bevy::utils::HashSet;
+use bevy::prelude::{AssetServer, *};
+use bevy::utils::{HashMap, HashSet};
+use bevy::window::PrimaryWindow;
 use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
 use bevy_ecs_tilemap::prelude::*;
@@ -124,6 +125,10 @@ impl EnemyBundle {
 #[derive(Default, Resource)]
 struct PlayerEntityDestination(Option<EntityIid>);
 
+#[derive(Component)]
+///  Marker component for the targeting marker (highlights the tile u are hovering with your mouse).
+struct TargetingMarker;
+
 /// Saves the cursor world position.
 #[derive(Resource, Default, Clone, Copy, Debug)]
 pub struct CursorPos {
@@ -203,17 +208,21 @@ impl LevelBoundaries {
 	/// Checks if [`GridCoords`] is a wall or outside of the Level.
 	fn movable(&self, grid_coords: GridCoords) -> Destination {
 		// Currently Grid coords can't be smaller than 0.
-		if grid_coords.x < 0
-			|| grid_coords.y < 0
-			|| grid_coords.x >= self.width
-			|| grid_coords.y >= self.height
-		{
+		if self.outside_boundary(grid_coords) {
 			Destination::BeyondBoundary
 		} else if self.walls.contains(&grid_coords) {
 			Destination::Wall
 		} else {
 			Destination::Walkable
 		}
+	}
+
+	/// Checks if [`GridCoords`] is outside of the Level.
+	const fn outside_boundary(&self, grid_coords: GridCoords) -> bool {
+		grid_coords.x < 0
+			|| grid_coords.y < 0
+			|| grid_coords.x >= self.width
+			|| grid_coords.y >= self.height
 	}
 }
 
@@ -246,6 +255,16 @@ fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
 			..default()
 		})
 		.insert(Name::new("Map"));
+
+	commands.spawn((
+		SpriteBundle {
+			texture: asset_server.load("tile-tip.png"),
+			transform: Transform::from_translation(Vec3::new(0., 0., 5.)),
+			..Default::default()
+		},
+		TargetingMarker,
+		GridCoords::default(),
+	));
 }
 
 /// Initialize states after level is spawned.
@@ -376,30 +395,49 @@ fn debug(
 
 /// We need to keep the cursor position updated based on any `CursorMoved` events.
 #[allow(clippy::needless_pass_by_value)]
-pub fn update_cursor_pos(
+fn update_cursor_pos(
 	camera_q: Query<'_, '_, (&GlobalTransform, &Camera)>,
-	mut cursor_moved_events: EventReader<'_, '_, CursorMoved>,
+	q_windows: Query<'_, '_, &Window, With<PrimaryWindow>>,
 	mut cursor_pos: ResMut<'_, CursorPos>,
-	tile_map_stats: Query<'_, '_, (&TilemapSize, &TilemapGridSize, &TilemapType)>,
 ) {
-	for cursor_moved in cursor_moved_events.read() {
+	if let Some(position) = q_windows.single().cursor_position() {
 		// To get the mouse's world position, we have to transform its window position by
 		// any transforms on the camera. This is done by projecting the cursor position into
 		// camera space (world space).
 		for (cam_t, cam) in camera_q.iter() {
-			if let Some(pos) = cam.viewport_to_world_2d(cam_t, cursor_moved.position) {
+			if let Some(pos) = cam.viewport_to_world_2d(cam_t, position) {
 				if cursor_pos.world_pos != pos {
 					cursor_pos.world_pos = pos;
-					let (map_size, grid_size, map_type) = tile_map_stats.single();
 
-					if let Some(tile_pos) =
-						TilePos::from_world_pos(&pos, map_size, grid_size, map_type)
-					{
-						cursor_pos.tile_pos = GridCoords::from(tile_pos);
-					}
+					cursor_pos.tile_pos = utils::translation_to_grid_coords(
+						cursor_pos.world_pos,
+						IVec2::splat(GRID_SIZE),
+					);
 				}
 			}
 		}
+	}
+}
+
+/// Updates the `TargetingMarker` with updated `CursorPos`.
+#[allow(clippy::needless_pass_by_value)]
+fn update_target_marker(
+	cursor_pos: Res<'_, CursorPos>,
+	mut target_marker_grid_coords: Query<
+		'_,
+		'_,
+		(&mut Visibility, &mut GridCoords),
+		With<TargetingMarker>,
+	>,
+	level_boundaries: Res<'_, LevelBoundaries>,
+) {
+	let (mut visibility, mut grid_coords) = target_marker_grid_coords.single_mut();
+
+	if level_boundaries.outside_boundary(cursor_pos.tile_pos) {
+		*visibility = Visibility::Hidden;
+	} else {
+		visibility.set_if_neq(Visibility::Visible);
+		grid_coords.set_if_neq(cursor_pos.tile_pos);
 	}
 }
 
@@ -677,7 +715,11 @@ fn main() {
 		.add_systems(PreUpdate, debug)
 		.add_systems(
 			Update,
-			(movement, door_interactions)
+			(
+				movement,
+				door_interactions,
+				(update_cursor_pos, update_target_marker).chain(),
+			)
 				.run_if(|debug: Res<'_, Debug>| matches!(debug.deref(), Debug::Inactive)),
 		)
 		.add_systems(
