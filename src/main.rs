@@ -1,5 +1,4 @@
 //! TODO:
-//! - make doors open and close
 //! - show all levels in debug mode
 
 #![allow(clippy::multiple_crate_versions)]
@@ -11,7 +10,7 @@ use std::time::Duration;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
 use bevy::prelude::{AssetServer, *};
-use bevy::utils::{HashMap, HashSet};
+use bevy::utils::{Entry, HashMap, HashSet};
 use bevy::window::PrimaryWindow;
 use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
@@ -150,17 +149,16 @@ struct WallBundle {
 }
 
 /// Component storing to which door a door leads.
-#[derive(Debug, Default, Component, Clone)]
-struct DestinationDoor {
+#[derive(Clone, Component, Debug, Default, Reflect)]
+struct Door {
 	/// Level the destination door is in.
 	level:  LevelIid,
 	/// Entity of the destination door.
 	entity: EntityIid,
 }
 
-impl DestinationDoor {
-	/// Get destination door.
-	fn from_field(entity_instance: &EntityInstance) -> Self {
+impl From<&EntityInstance> for Door {
+	fn from(entity_instance: &EntityInstance) -> Self {
 		let reference = entity_instance
 			.get_entity_ref_field("DestinationDoor")
 			.expect("expected entity to have non-nullable `DestinationDoor` entity reference field")
@@ -173,38 +171,34 @@ impl DestinationDoor {
 	}
 }
 
-/// Door marker component.
-#[derive(Default, Component, Reflect, PartialEq, Eq)]
-struct Door(bool);
-
 /// Door bundle.
 #[derive(Default, Bundle, LdtkEntity)]
 struct DoorBundle {
-	/// Door marker component.
-	door:                Door,
 	/// Sprite bundle.
 	#[sprite_sheet_bundle]
 	sprite_sheet_bundle: SpriteSheetBundle,
-	#[with(DestinationDoor::from_field)]
-	/// Which Door this Door leads to.
-	destination_door:    DestinationDoor,
+	#[from_entity_instance]
+	/// Door data.
+	door:                Door,
 	/// Door grid coordinates.
 	#[grid_coords]
 	grid_coords:         GridCoords,
 }
 
-/// Caches the location of walls and the level size.
+/// Caches everything in the current level we don't want to loop through.
 #[derive(Default, Resource)]
-struct LevelBoundaries {
+struct LevelCache {
 	/// The cashed walls of this level.
-	walls:  HashSet<GridCoords>,
+	walls:   HashSet<GridCoords>,
+	/// The cashed enemies of this level.
+	enemies: HashMap<GridCoords, Entity>,
 	/// The level width in tiles.
-	width:  i32,
+	width:   i32,
 	/// The level height in tiles.
-	height: i32,
+	height:  i32,
 }
 
-impl LevelBoundaries {
+impl LevelCache {
 	/// Checks if [`GridCoords`] is a wall or outside of the Level.
 	fn movable(&self, grid_coords: GridCoords) -> Destination {
 		// Currently Grid coords can't be smaller than 0.
@@ -260,7 +254,11 @@ fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
 		SpriteBundle {
 			texture: asset_server.load("tile-tip.png"),
 			transform: Transform::from_translation(Vec3::new(0., 0., 5.)),
-			..Default::default()
+			sprite: Sprite {
+				custom_size: Some(Vec2::new(16., 16.)),
+				..Sprite::default()
+			},
+			..SpriteBundle::default()
 		},
 		TargetingMarker,
 		GridCoords::default(),
@@ -268,11 +266,16 @@ fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
 }
 
 /// Initialize states after level is spawned.
-#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+#[allow(
+	clippy::needless_pass_by_value,
+	clippy::too_many_arguments,
+	clippy::type_complexity
+)]
 fn level_spawn(
-	mut level_boundaries: ResMut<'_, LevelBoundaries>,
+	mut level_cache: ResMut<'_, LevelCache>,
 	mut level_events: EventReader<'_, '_, LevelEvent>,
 	walls: Query<'_, '_, &GridCoords, (With<Wall>, Without<Player>)>,
+	enemies: Query<'_, '_, (&GridCoords, Entity), (With<Enemy>, Without<Player>)>,
 	mut player_entity_destination: ResMut<'_, PlayerEntityDestination>,
 	ldtk_entities: Query<'_, '_, (Entity, &EntityIid), Without<Player>>,
 	entity_grid_coords: Query<'_, '_, &GridCoords, Without<Player>>,
@@ -293,11 +296,18 @@ fn level_spawn(
 		.get_raw_level_by_iid(level_iid.get())
 		.expect("spawned level should exist in project");
 
-	// ... so we can update the [`LevelBoundaries`] resource.
-	*level_boundaries = LevelBoundaries {
-		walls:  walls.iter().copied().collect(),
-		width:  level.px_wid / GRID_SIZE,
-		height: level.px_hei / GRID_SIZE,
+	let mut enemies_map = HashMap::new();
+
+	for (grid_coords, entity) in &enemies {
+		enemies_map.insert(*grid_coords, entity);
+	}
+
+	// ... so we can update the [`LevelCache`] resource.
+	*level_cache = LevelCache {
+		walls:   walls.iter().copied().collect(),
+		enemies: enemies_map,
+		width:   level.px_wid / GRID_SIZE,
+		height:  level.px_hei / GRID_SIZE,
 	};
 
 	// We need to update the players grid coords on level changes to the correct "entrance".
@@ -321,6 +331,35 @@ fn level_spawn(
 		});
 
 		player_entity_destination.0 = None;
+	}
+}
+
+/// Game state.
+#[derive(Default, Resource)]
+struct State {
+	/// State of each door.
+	doors: HashMap<EntityIid, bool>,
+}
+
+/// Setup state for each entity.
+#[allow(clippy::needless_pass_by_value)]
+fn state(
+	mut state: ResMut<'_, State>,
+	mut doors: Query<'_, '_, (&EntityIid, &Door, &mut TextureAtlas), Added<Door>>,
+) {
+	for (iid, door, mut atlas) in &mut doors {
+		let open = match state.doors.entry(iid.clone()) {
+			Entry::Occupied(value) => *value.get(),
+			Entry::Vacant(entry) => *entry.insert(false),
+		};
+
+		if open {
+			atlas.index = 133;
+		} else {
+			atlas.index = 108;
+		}
+
+		state.doors.entry(door.entity.clone()).or_insert(open);
 	}
 }
 
@@ -426,18 +465,24 @@ fn update_target_marker(
 	mut target_marker_grid_coords: Query<
 		'_,
 		'_,
-		(&mut Visibility, &mut GridCoords),
+		(&mut Visibility, &mut GridCoords, &mut Sprite),
 		With<TargetingMarker>,
 	>,
-	level_boundaries: Res<'_, LevelBoundaries>,
+	level_cache: Res<'_, LevelCache>,
 ) {
-	let (mut visibility, mut grid_coords) = target_marker_grid_coords.single_mut();
+	let (mut visibility, mut grid_coords, mut sprite) = target_marker_grid_coords.single_mut();
 
-	if level_boundaries.outside_boundary(cursor_pos.tile_pos) {
+	if level_cache.outside_boundary(cursor_pos.tile_pos) {
 		*visibility = Visibility::Hidden;
 	} else {
 		visibility.set_if_neq(Visibility::Visible);
 		grid_coords.set_if_neq(cursor_pos.tile_pos);
+
+		if level_cache.enemies.contains_key(grid_coords.deref()) {
+			sprite.color = Color::RED;
+		} else {
+			sprite.color = Color::WHITE;
+		}
 	}
 }
 
@@ -458,7 +503,8 @@ fn camera_update(
 /// Opens and closes doors.
 #[allow(clippy::needless_pass_by_value)]
 fn door_interactions(
-	mut doors: Query<'_, '_, (&mut Door, &GridCoords)>,
+	mut state: ResMut<'_, State>,
+	mut doors: Query<'_, '_, (&EntityIid, &Door, &GridCoords, &mut TextureAtlas)>,
 	tile_map_size: Query<'_, '_, &TilemapSize>,
 	player: Query<'_, '_, &GridCoords, With<Player>>,
 	mut input: EventReader<'_, '_, KeyboardInput>,
@@ -486,22 +532,21 @@ fn door_interactions(
 		)
 		.iter()
 		{
-			for (mut door, door_grid_coords) in &mut doors {
+			for (iid, door, door_grid_coords, mut atlas) in &mut doors {
 				if TilePos::from(*door_grid_coords) == *tile_pos {
-					door.0 = !door.0;
+					let open = state.doors.get_mut(iid).unwrap();
+					*open = !*open;
+					#[allow(clippy::shadow_same)]
+					let open = *open;
+					*state.doors.get_mut(&door.entity).unwrap() = open;
+
+					if open {
+						atlas.index = 133;
+					} else {
+						atlas.index = 108;
+					}
 				}
 			}
-		}
-	}
-}
-
-/// Changes texture atlas index of doors when they open and close.
-fn animate_door(mut doors: Query<'_, '_, (&Door, &mut TextureAtlas), Changed<Door>>) {
-	for (door, mut atlas) in &mut doors {
-		if door.0 {
-			atlas.index = 133;
-		} else {
-			atlas.index = 108;
 		}
 	}
 }
@@ -513,6 +558,7 @@ fn animate_door(mut doors: Query<'_, '_, (&Door, &mut TextureAtlas), Changed<Doo
 	clippy::type_complexity
 )]
 fn movement(
+	state: Res<'_, State>,
 	mut commands: Commands<'_, '_>,
 	mut input: EventReader<'_, '_, KeyboardInput>,
 	mut player: Query<
@@ -529,9 +575,9 @@ fn movement(
 		),
 		With<Player>,
 	>,
-	level_boundaries: Res<'_, LevelBoundaries>,
+	level_boundaries: Res<'_, LevelCache>,
 	mut level_selection: ResMut<'_, LevelSelection>,
-	doors: Query<'_, '_, (&Door, &GridCoords, &DestinationDoor), (With<Door>, Without<Player>)>,
+	doors: Query<'_, '_, (&EntityIid, &GridCoords, &Door), (With<Door>, Without<Player>)>,
 	mut destination_entity: ResMut<'_, PlayerEntityDestination>,
 ) {
 	let Some(input) = input.read().next() else {
@@ -565,9 +611,9 @@ fn movement(
 
 	// If we the player is trying to move into a closed door we handle it like they are moving into
 	// a wall.
-	for (open, door_coord, _) in &doors {
+	for (door, door_coord, _) in &doors {
 		if *door_coord == destination {
-			if !open.0 {
+			if !state.doors.get(door).unwrap() {
 				movable = Destination::Wall;
 			}
 
@@ -712,7 +758,7 @@ fn main() {
 		.insert_resource(Msaa::Off)
 		.add_systems(Startup, startup)
 		.add_systems(First, level_spawn)
-		.add_systems(PreUpdate, debug)
+		.add_systems(PreUpdate, (state, debug))
 		.add_systems(
 			Update,
 			(
@@ -726,7 +772,6 @@ fn main() {
 			PostUpdate,
 			(
 				animate,
-				animate_door,
 				(
 					finish_animation,
 					translate_grid_coords_entities,
@@ -743,7 +788,8 @@ fn main() {
 		.insert_resource(LevelSelection::Iid(LevelIid::new(
 			"32dd4990-25d0-11ef-be0e-2bd40eab6b07",
 		)))
-		.init_resource::<LevelBoundaries>()
+		.init_resource::<State>()
+		.init_resource::<LevelCache>()
 		.init_resource::<CursorPos>()
 		.init_resource::<PlayerEntityDestination>()
 		.register_ldtk_entity::<PlayerBundle>("Player")
