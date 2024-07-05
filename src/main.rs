@@ -1,9 +1,6 @@
 //! TODO:
-//! - show all levels in debug mode
-//! - add player walking animation
 //! - make doors open and close
-//! - move to room when moving into the correct direction while standing inside the door
-//! - don't switch level before animation is finished or interrupted
+//! - show all levels in debug mode
 
 #![allow(clippy::multiple_crate_versions)]
 
@@ -23,6 +20,7 @@ use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_pancam::{MoveMode, PanCam, PanCamPlugin};
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween, TweenCompleted, TweeningPlugin};
+use helpers::square_grid::neighbors::Neighbors;
 
 /// The size of the Grid in pixels.
 const GRID_SIZE: i32 = 16;
@@ -55,12 +53,69 @@ impl Default for PlayerBundle {
 			player:              Player,
 			sprite_sheet_bundle: SpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
-			animation:           Animation {
-				timer: Timer::from_seconds(0.25, TimerMode::Repeating),
-				first: 0,
-				last:  3,
-			},
+			animation:           Self::idle_animation(),
 			worldly:             Worldly::default(),
+		}
+	}
+}
+
+impl PlayerBundle {
+	/// Return idle [`Animation`].
+	fn idle_animation() -> Animation {
+		Animation {
+			timer: Timer::from_seconds(0.25, TimerMode::Repeating),
+			first: 0,
+			last:  3,
+		}
+	}
+
+	/// Return walking [`Animation`].
+	fn walking_animation() -> Animation {
+		Animation {
+			timer: Timer::from_seconds(0.1, TimerMode::Repeating),
+			first: 9,
+			last:  14,
+		}
+	}
+}
+
+/// Enemy marker component.
+#[derive(Default, Component)]
+struct Enemy;
+
+/// Enemy bundle.
+#[derive(Bundle, LdtkEntity)]
+struct EnemyBundle {
+	/// Player marker component.
+	enemy:               Enemy,
+	/// Sprite bundle.
+	#[sprite_sheet_bundle]
+	sprite_sheet_bundle: SpriteSheetBundle,
+	/// Player grid coordinates.
+	#[grid_coords]
+	grid_coords:         GridCoords,
+	/// Animation.
+	animation:           Animation,
+}
+
+impl Default for EnemyBundle {
+	fn default() -> Self {
+		Self {
+			enemy:               Enemy,
+			sprite_sheet_bundle: SpriteSheetBundle::default(),
+			grid_coords:         GridCoords::default(),
+			animation:           Self::idle_animation(),
+		}
+	}
+}
+
+impl EnemyBundle {
+	/// Return idle [`Animation`].
+	fn idle_animation() -> Animation {
+		Animation {
+			timer: Timer::from_seconds(0.25, TimerMode::Repeating),
+			first: 0,
+			last:  3,
 		}
 	}
 }
@@ -68,6 +123,15 @@ impl Default for PlayerBundle {
 /// Caches which entity the Player is teleporting to (currently just between doors).
 #[derive(Default, Resource)]
 struct PlayerEntityDestination(Option<EntityIid>);
+
+/// Saves the cursor world position.
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct CursorPos {
+	/// The cursor position in the Bevy world.
+	world_pos: Vec2,
+	/// The tile position of the cursor.
+	tile_pos:  GridCoords,
+}
 
 /// Wall marker component.
 #[derive(Default, Component)]
@@ -105,8 +169,8 @@ impl DestinationDoor {
 }
 
 /// Door marker component.
-#[derive(Default, Component)]
-struct Door;
+#[derive(Default, Component, Reflect, PartialEq, Eq)]
+struct Door(bool);
 
 /// Door bundle.
 #[derive(Default, Bundle, LdtkEntity)]
@@ -124,6 +188,7 @@ struct DoorBundle {
 	grid_coords:         GridCoords,
 }
 
+/// Caches the location of walls and the level size.
 #[derive(Default, Resource)]
 struct LevelBoundaries {
 	/// The cashed walls of this level.
@@ -135,15 +200,34 @@ struct LevelBoundaries {
 }
 
 impl LevelBoundaries {
-	/// Checks if [`GridCoords`] is a wall.
-	fn movable(&self, grid_coords: GridCoords) -> bool {
-		grid_coords.x < 0
+	/// Checks if [`GridCoords`] is a wall or outside of the Level.
+	fn movable(&self, grid_coords: GridCoords) -> Destination {
+		// Currently Grid coords can't be smaller than 0.
+		if grid_coords.x < 0
 			|| grid_coords.y < 0
 			|| grid_coords.x >= self.width
 			|| grid_coords.y >= self.height
-			|| self.walls.contains(&grid_coords)
+		{
+			Destination::BeyondBoundary
+		} else if self.walls.contains(&grid_coords) {
+			Destination::Wall
+		} else {
+			Destination::Walkable
+		}
 	}
 }
+
+/// What the Destination of an attempted movement of the player is.
+#[derive(PartialEq, Eq)]
+enum Destination {
+	/// The potential destination is a Wall.
+	Wall,
+	/// The potential destination is outside of the Level boundary.
+	BeyondBoundary,
+	/// The potential destination is walkable.
+	Walkable,
+}
+
 /// Startup system.
 #[allow(clippy::needless_pass_by_value)]
 fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
@@ -167,7 +251,6 @@ fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
 /// Initialize states after level is spawned.
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn level_spawn(
-	mut commands: Commands<'_, '_>,
 	mut level_boundaries: ResMut<'_, LevelBoundaries>,
 	mut level_events: EventReader<'_, '_, LevelEvent>,
 	walls: Query<'_, '_, &GridCoords, (With<Wall>, Without<Player>)>,
@@ -177,11 +260,13 @@ fn level_spawn(
 	mut player: Query<'_, '_, (Entity, &mut GridCoords), With<Player>>,
 	ldtk_project_entities: Query<'_, '_, &Handle<LdtkProject>>,
 	ldtk_project_assets: Res<'_, Assets<LdtkProject>>,
+	mut complete_animation: EventWriter<'_, TweenCompleted>,
 ) {
 	let Some(LevelEvent::Spawned(level_iid)) = level_events.read().next() else {
 		return;
 	};
 
+	// We need to get the size of the level from the ldtk_projekt_asset...
 	let ldtk_project = ldtk_project_assets
 		.get(ldtk_project_entities.single())
 		.expect("LdtkProject should be loaded when level is spawned");
@@ -189,12 +274,14 @@ fn level_spawn(
 		.get_raw_level_by_iid(level_iid.get())
 		.expect("spawned level should exist in project");
 
+	// ... so we can update the [`LevelBoundaries`] resource.
 	*level_boundaries = LevelBoundaries {
 		walls:  walls.iter().copied().collect(),
 		width:  level.px_wid / GRID_SIZE,
 		height: level.px_hei / GRID_SIZE,
 	};
 
+	// We need to update the players grid coords on level changes to the correct "entrance".
 	if let Some(destination_entity_iid) = &player_entity_destination.0 {
 		let (destination_entity, _) = ldtk_entities
 			.iter()
@@ -207,9 +294,12 @@ fn level_spawn(
 		let (player_entity, mut player_grid_coords) = player.single_mut();
 		*player_grid_coords = *destination_grid_coords;
 
-		commands
-			.entity(player_entity)
-			.remove::<Animator<Transform>>();
+		// We need to remove the Animation in case there was still one running during a level
+		// change.
+		complete_animation.send(TweenCompleted {
+			entity:    player_entity,
+			user_data: 0,
+		});
 
 		player_entity_destination.0 = None;
 	}
@@ -284,6 +374,35 @@ fn debug(
 	}
 }
 
+/// We need to keep the cursor position updated based on any `CursorMoved` events.
+#[allow(clippy::needless_pass_by_value)]
+pub fn update_cursor_pos(
+	camera_q: Query<'_, '_, (&GlobalTransform, &Camera)>,
+	mut cursor_moved_events: EventReader<'_, '_, CursorMoved>,
+	mut cursor_pos: ResMut<'_, CursorPos>,
+	tile_map_stats: Query<'_, '_, (&TilemapSize, &TilemapGridSize, &TilemapType)>,
+) {
+	for cursor_moved in cursor_moved_events.read() {
+		// To get the mouse's world position, we have to transform its window position by
+		// any transforms on the camera. This is done by projecting the cursor position into
+		// camera space (world space).
+		for (cam_t, cam) in camera_q.iter() {
+			if let Some(pos) = cam.viewport_to_world_2d(cam_t, cursor_moved.position) {
+				if cursor_pos.world_pos != pos {
+					cursor_pos.world_pos = pos;
+					let (map_size, grid_size, map_type) = tile_map_stats.single();
+
+					if let Some(tile_pos) =
+						TilePos::from_world_pos(&pos, map_size, grid_size, map_type)
+					{
+						cursor_pos.tile_pos = GridCoords::from(tile_pos);
+					}
+				}
+			}
+		}
+	}
+}
+
 /// Updates Camera with player movement.
 #[allow(clippy::needless_pass_by_value)]
 fn camera_update(
@@ -298,6 +417,57 @@ fn camera_update(
 	}
 }
 
+/// Opens and closes doors.
+#[allow(clippy::needless_pass_by_value)]
+fn door_interactions(
+	mut doors: Query<'_, '_, (&mut Door, &GridCoords)>,
+	tile_map_size: Query<'_, '_, &TilemapSize>,
+	player: Query<'_, '_, &GridCoords, With<Player>>,
+	mut input: EventReader<'_, '_, KeyboardInput>,
+) {
+	let Some(input) = input.read().next() else {
+		return;
+	};
+	let KeyboardInput {
+		state: ButtonState::Pressed,
+		repeat: false,
+		..
+	} = input
+	else {
+		return;
+	};
+
+	if let KeyCode::KeyF = input.key_code {
+		let player_grid_coords = player.single();
+		let tile_map_size = tile_map_size.single();
+
+		for tile_pos in Neighbors::get_square_neighboring_positions(
+			&TilePos::from(*player_grid_coords),
+			tile_map_size,
+			true,
+		)
+		.iter()
+		{
+			for (mut door, door_grid_coords) in &mut doors {
+				if TilePos::from(*door_grid_coords) == *tile_pos {
+					door.0 = !door.0;
+				}
+			}
+		}
+	}
+}
+
+/// Changes texture atlas index of doors when they open and close.
+fn animate_door(mut doors: Query<'_, '_, (&Door, &mut TextureAtlas), Changed<Door>>) {
+	for (door, mut atlas) in &mut doors {
+		if door.0 {
+			atlas.index = 133;
+		} else {
+			atlas.index = 108;
+		}
+	}
+}
+
 /// Character movement.
 #[allow(
 	clippy::needless_pass_by_value,
@@ -306,22 +476,35 @@ fn camera_update(
 )]
 fn movement(
 	mut commands: Commands<'_, '_>,
-	debug: Res<'_, Debug>,
 	mut input: EventReader<'_, '_, KeyboardInput>,
-	mut player: Query<'_, '_, (Entity, &mut Transform, &mut GridCoords, &mut Sprite), With<Player>>,
+	mut player: Query<
+		'_,
+		'_,
+		(
+			Entity,
+			&mut Transform,
+			&mut GridCoords,
+			&mut Sprite,
+			&mut TextureAtlas,
+			&mut Animation,
+			Has<AnimationFinish>,
+		),
+		With<Player>,
+	>,
 	level_boundaries: Res<'_, LevelBoundaries>,
 	mut level_selection: ResMut<'_, LevelSelection>,
-	doors: Query<'_, '_, (&GridCoords, &DestinationDoor), (With<Door>, Without<Player>)>,
+	doors: Query<'_, '_, (&Door, &GridCoords, &DestinationDoor), (With<Door>, Without<Player>)>,
 	mut destination_entity: ResMut<'_, PlayerEntityDestination>,
 ) {
-	if let Debug::Active { .. } = debug.deref() {
-		return;
-	}
-
 	let Some(input) = input.read().next() else {
 		return;
 	};
-	let ButtonState::Released = input.state else {
+	let KeyboardInput {
+		state: ButtonState::Pressed,
+		repeat: false,
+		..
+	} = input
+	else {
 		return;
 	};
 
@@ -337,15 +520,30 @@ fn movement(
 		_ => return,
 	};
 
-	let (player, mut transform, mut grid_pos, mut sprite) = player.single_mut();
+	let (player, mut transform, mut grid_pos, mut sprite, mut atlas, mut animation, finish) =
+		player.single_mut();
 	let destination = *grid_pos + direction;
+	let mut movable = level_boundaries.movable(destination);
 
-	if !level_boundaries.movable(destination) {
+	// If we the player is trying to move into a closed door we handle it like they are moving into
+	// a wall.
+	for (open, door_coord, _) in &doors {
+		if *door_coord == destination {
+			if !open.0 {
+				movable = Destination::Wall;
+			}
+
+			break;
+		}
+	}
+
+	if let Destination::Walkable = movable {
 		transform.translation =
 			utils::grid_coords_to_translation(*grid_pos, IVec2::splat(GRID_SIZE))
 				.extend(transform.translation.z);
 
-		commands.entity(player).insert(Animator::new(
+		let mut player = commands.entity(player);
+		player.insert(Animator::new(
 			Tween::new(
 				EaseMethod::Linear,
 				Duration::from_millis(250),
@@ -358,6 +556,14 @@ fn movement(
 			.with_completed_event(0),
 		));
 
+		// If we are currently already walking, no changes are required.
+		if !finish {
+			*animation = PlayerBundle::walking_animation();
+			atlas.index = animation.first;
+
+			player.insert(AnimationFinish(PlayerBundle::idle_animation()));
+		}
+
 		*grid_pos = destination;
 
 		if let Some(flip) = flip {
@@ -365,13 +571,15 @@ fn movement(
 		}
 	}
 
-	for (door_coord, destination_door) in &doors {
-		if *door_coord == destination {
+	for (_, door_coord, destination_door) in &doors {
+		// If the Player is on a tile with a door and moves tries to move outside of the level we
+		// change levels.
+		if movable == Destination::BeyondBoundary && *door_coord == *grid_pos {
 			if let LevelSelection::Iid(current_level) = level_selection.as_mut() {
 				*current_level = destination_door.level.clone();
 				destination_entity.0 = Some(destination_door.entity.clone());
 			} else {
-				unreachable!("Levels should only be LevelIid")
+				unreachable!("levels should only be `LevelIid`")
 			}
 		}
 	}
@@ -395,7 +603,7 @@ fn translate_grid_coords_entities(
 }
 
 /// Animated sprite.
-#[derive(Component)]
+#[derive(Clone, Component)]
 struct Animation {
 	/// Animation timing.
 	timer: Timer,
@@ -407,12 +615,10 @@ struct Animation {
 
 /// Animate entities.
 #[allow(clippy::needless_pass_by_value)]
-fn animate(
-	time: Res<'_, Time>,
-	mut query: Query<'_, '_, (&mut TextureAtlas, &mut Animation), With<Player>>,
-) {
-	if let Ok((mut atlas, mut animation)) = query.get_single_mut() {
+fn animate(time: Res<'_, Time>, mut query: Query<'_, '_, (&mut TextureAtlas, &mut Animation)>) {
+	for (mut atlas, mut animation) in &mut query {
 		animation.timer.tick(time.delta());
+
 		if animation.timer.just_finished() {
 			atlas.index = if atlas.index == animation.last {
 				animation.first
@@ -423,15 +629,32 @@ fn animate(
 	}
 }
 
-/// Remove [`Animator`] after completion.
+/// Switch animation when finished.
+#[derive(Component)]
+struct AnimationFinish(Animation);
+
+/// Remove [`Animator`] after completion and transition to old animation
 fn finish_animation(
 	mut commands: Commands<'_, '_>,
 	mut completed: EventReader<'_, '_, TweenCompleted>,
+	mut query: Query<
+		'_,
+		'_,
+		(&AnimationFinish, &mut TextureAtlas, &mut Animation),
+		With<Animator<Transform>>,
+	>,
 ) {
 	for completed in completed.read() {
-		commands
-			.entity(completed.entity)
-			.remove::<Animator<Transform>>();
+		let mut entity = commands.entity(completed.entity);
+
+		// Transition to old animation.
+		if let Ok((finish, mut atlas, mut animation)) = query.get_mut(completed.entity) {
+			*animation.deref_mut() = finish.0.clone();
+			atlas.index = animation.first;
+			entity.remove::<AnimationFinish>();
+		}
+
+		entity.remove::<Animator<Transform>>();
 	}
 }
 
@@ -446,14 +669,22 @@ fn main() {
 			WorldInspectorPlugin::new()
 				.run_if(|debug: Res<'_, Debug>| matches!(debug.deref(), Debug::Active { .. })),
 		))
+		// Fixes issues with tile bleeding.
+		// See <https://github.com/bevyengine/bevy/issues/1949>.
+		.insert_resource(Msaa::Off)
 		.add_systems(Startup, startup)
 		.add_systems(First, level_spawn)
 		.add_systems(PreUpdate, debug)
-		.add_systems(Update, movement)
+		.add_systems(
+			Update,
+			(movement, door_interactions)
+				.run_if(|debug: Res<'_, Debug>| matches!(debug.deref(), Debug::Inactive)),
+		)
 		.add_systems(
 			PostUpdate,
 			(
 				animate,
+				animate_door,
 				(
 					finish_animation,
 					translate_grid_coords_entities,
@@ -471,9 +702,12 @@ fn main() {
 			"32dd4990-25d0-11ef-be0e-2bd40eab6b07",
 		)))
 		.init_resource::<LevelBoundaries>()
+		.init_resource::<CursorPos>()
 		.init_resource::<PlayerEntityDestination>()
 		.register_ldtk_entity::<PlayerBundle>("Player")
+		.register_ldtk_entity::<EnemyBundle>("Skeleton")
 		.register_ldtk_entity::<DoorBundle>("Door")
 		.register_ldtk_int_cell::<WallBundle>(1)
+		.register_type::<Door>()
 		.run();
 }

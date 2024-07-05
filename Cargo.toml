@@ -13,9 +13,11 @@ bevy_pancam = { version = "0.11", features = ["bevy_egui"] }
 bevy_tweening = "0.10"
 
 [patch.crates-io]
-bevy_ecs_ldtk = { git = "https://github.com/Trouv/bevy_ecs_ldtk" }
-bevy_ecs_tilemap = { git = "https://github.com/StarArawn/bevy_ecs_tilemap" }
+bevy_ecs_ldtk = { git = "https://github.com/Trouv/bevy_ecs_ldtk", rev = "617b108dfc22799047cdb4d2c84c3cdfba7e985a" }
+bevy_ecs_tilemap = { git = "https://github.com/StarArawn/bevy_ecs_tilemap", rev = "e4f3cc668110d9a46f6fe407db4f6d4daeabc3d2" }
+bevy_input = { git = "https://github.com/daxpedda/bevy", branch = "small-bevy-game" }
 bevy_pancam = { git = "https://github.com/Toniman575/bevy_pancam", branch = "keyboard-movement" }
+bevy_winit = { git = "https://github.com/daxpedda/bevy", branch = "small-bevy-game" }
 
 [features]
 dynamic = ["bevy/dynamic_linking"]
