@@ -1,4 +1,6 @@
 //! TODO:
+//! - [Bug] Sometimes levels are not despawned correctly, leading to false walls and doors being
+//!   cached.
 //! - show all levels in debug mode
 
 #![allow(clippy::multiple_crate_versions)]
@@ -10,11 +12,14 @@ use std::time::Duration;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
 use bevy::prelude::{AssetServer, *};
+use bevy::sprite::MaterialMesh2dBundle;
 use bevy::utils::{Entry, HashMap, HashSet};
 use bevy::window::PrimaryWindow;
 use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
 use bevy_ecs_tilemap::prelude::*;
+use bevy_egui::egui::{Frame, SidePanel};
+use bevy_egui::{EguiPlugin, EguiSet};
 use bevy_inspector_egui::bevy_egui::EguiContexts;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_pancam::{MoveMode, PanCam, PanCamPlugin};
@@ -25,6 +30,31 @@ use helpers::square_grid::neighbors::Neighbors;
 /// The size of the Grid in pixels.
 const GRID_SIZE: i32 = 16;
 
+/// Component for tracking health in entities.
+#[derive(Clone, Component, Debug, Default, Reflect, PartialEq, Eq, Copy)]
+struct Health {
+	/// How much health the entity currently has.
+	current: u16,
+	/// How much health the entity can have.
+	max:     u16,
+}
+
+#[allow(clippy::fallible_impl_from)]
+impl From<&EntityInstance> for Health {
+	fn from(entity_instance: &EntityInstance) -> Self {
+		let reference = *entity_instance
+			.get_int_field("Health")
+			.expect("expected entity to have non-nullable `Health` int field");
+
+		let health_value = u16::try_from(reference).expect("invalid health value");
+
+		Self {
+			current: health_value,
+			max:     health_value,
+		}
+	}
+}
+
 /// Player marker component.
 #[derive(Default, Component)]
 struct Player;
@@ -34,6 +64,9 @@ struct Player;
 struct PlayerBundle {
 	/// Player marker component.
 	player:              Player,
+	/// Health of the player.
+	#[from_entity_instance]
+	health:              Health,
 	/// Sprite bundle.
 	#[sprite_sheet_bundle]
 	sprite_sheet_bundle: SpriteSheetBundle,
@@ -51,6 +84,7 @@ impl Default for PlayerBundle {
 	fn default() -> Self {
 		Self {
 			player:              Player,
+			health:              Health::default(),
 			sprite_sheet_bundle: SpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
 			animation:           Self::idle_animation(),
@@ -79,6 +113,17 @@ impl PlayerBundle {
 	}
 }
 
+/// Player bundle.
+#[derive(Bundle, LdtkEntity)]
+struct KeyBundle {
+	/// Sprite bundle.
+	#[sprite_sheet_bundle]
+	sprite_sheet_bundle: SpriteSheetBundle,
+	/// Key grid coordinates.
+	#[grid_coords]
+	grid_coords:         GridCoords,
+}
+
 /// Enemy marker component.
 #[derive(Default, Component)]
 struct Enemy;
@@ -88,6 +133,9 @@ struct Enemy;
 struct EnemyBundle {
 	/// Player marker component.
 	enemy:               Enemy,
+	/// Health of the enemy.
+	#[from_entity_instance]
+	health:              Health,
 	/// Sprite bundle.
 	#[sprite_sheet_bundle]
 	sprite_sheet_bundle: SpriteSheetBundle,
@@ -102,6 +150,7 @@ impl Default for EnemyBundle {
 	fn default() -> Self {
 		Self {
 			enemy:               Enemy,
+			health:              Health::default(),
 			sprite_sheet_bundle: SpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
 			animation:           Self::idle_animation(),
@@ -186,7 +235,8 @@ struct DoorBundle {
 }
 
 /// Caches everything in the current level we don't want to loop through.
-#[derive(Default, Resource)]
+#[derive(Default, Resource, Reflect)]
+#[reflect(Resource)]
 struct LevelCache {
 	/// The cashed walls of this level.
 	walls:   HashSet<GridCoords>,
@@ -234,12 +284,14 @@ enum Destination {
 /// Startup system.
 #[allow(clippy::needless_pass_by_value)]
 fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
-	commands.spawn(Camera2dBundle::default()).insert(PanCam {
+	let mut camera = Camera2dBundle::default();
+	camera.projection.scale = 0.5;
+	commands.spawn(camera).insert(PanCam {
 		move_mode: MoveMode::Mouse,
 		grab_buttons: Vec::new(),
 		zoom_to_cursor: false,
 		min_scale: 0.1,
-		max_scale: Some(10.),
+		max_scale: Some(1.),
 		..PanCam::default()
 	});
 
@@ -262,6 +314,7 @@ fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
 		},
 		TargetingMarker,
 		GridCoords::default(),
+		Name::new("Tile Target Marker"),
 	));
 }
 
@@ -455,6 +508,26 @@ fn update_cursor_pos(
 				}
 			}
 		}
+	}
+}
+
+/// When an Entity with a healthbar is spawned we spawn a mesh to represent it.
+#[allow(clippy::needless_pass_by_value)]
+fn spawn_healthbar(
+	added: Query<'_, '_, Entity, Added<Health>>,
+	mut commands: Commands<'_, '_>,
+	mut meshes: ResMut<'_, Assets<Mesh>>,
+	mut materials: ResMut<'_, Assets<ColorMaterial>>,
+) {
+	for entity in &added {
+		commands.entity(entity).with_children(|entity| {
+			entity.spawn(MaterialMesh2dBundle {
+				mesh: meshes.add(Rectangle::new(32., 5.)).into(),
+				material: materials.add(Color::RED),
+				transform: Transform::from_translation(Vec3::new(0., 20., 0.1)),
+				..MaterialMesh2dBundle::default()
+			});
+		});
 	}
 }
 
@@ -764,6 +837,7 @@ fn main() {
 			(
 				movement,
 				door_interactions,
+				spawn_healthbar,
 				(update_cursor_pos, update_target_marker).chain(),
 			)
 				.run_if(|debug: Res<'_, Debug>| matches!(debug.deref(), Debug::Inactive)),
@@ -793,9 +867,12 @@ fn main() {
 		.init_resource::<CursorPos>()
 		.init_resource::<PlayerEntityDestination>()
 		.register_ldtk_entity::<PlayerBundle>("Player")
+		.register_ldtk_entity::<KeyBundle>("Key")
 		.register_ldtk_entity::<EnemyBundle>("Skeleton")
 		.register_ldtk_entity::<DoorBundle>("Door")
 		.register_ldtk_int_cell::<WallBundle>(1)
 		.register_type::<Door>()
+		.register_type::<Health>()
+		.register_type::<LevelCache>()
 		.run();
 }
