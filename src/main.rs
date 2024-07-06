@@ -18,13 +18,14 @@ use bevy::window::PrimaryWindow;
 use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
 use bevy_ecs_tilemap::prelude::*;
-use bevy_egui::egui::{Frame, SidePanel};
-use bevy_egui::{EguiPlugin, EguiSet};
+use bevy_egui::egui::{Align, Layout, Pos2};
+use bevy_egui::{egui, EguiPlugin, EguiSet};
 use bevy_inspector_egui::bevy_egui::EguiContexts;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_pancam::{MoveMode, PanCam, PanCamPlugin};
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween, TweenCompleted, TweeningPlugin};
+use egui::{Color32, Frame, Image, SidePanel, Stroke};
 use helpers::square_grid::neighbors::Neighbors;
 
 /// The size of the Grid in pixels.
@@ -54,6 +55,10 @@ impl From<&EntityInstance> for Health {
 		}
 	}
 }
+
+/// Healthbar marker component.
+#[derive(Component)]
+struct HealthBar;
 
 /// Player marker component.
 #[derive(Default, Component)]
@@ -113,9 +118,15 @@ impl PlayerBundle {
 	}
 }
 
+/// Marker components.
+#[derive(Component, Default)]
+struct Key;
+
 /// Player bundle.
-#[derive(Bundle, LdtkEntity)]
+#[derive(Bundle, Default, LdtkEntity)]
 struct KeyBundle {
+	/// Key marker component.
+	key:                 Key,
 	/// Sprite bundle.
 	#[sprite_sheet_bundle]
 	sprite_sheet_bundle: SpriteSheetBundle,
@@ -173,9 +184,9 @@ impl EnemyBundle {
 #[derive(Default, Resource)]
 struct PlayerEntityDestination(Option<EntityIid>);
 
-#[derive(Component)]
+#[derive(Component, PartialEq, Eq)]
 ///  Marker component for the targeting marker (highlights the tile u are hovering with your mouse).
-struct TargetingMarker;
+struct TargetingMarker(Option<Entity>);
 
 /// Saves the cursor world position.
 #[derive(Resource, Default, Clone, Copy, Debug)]
@@ -240,8 +251,12 @@ struct DoorBundle {
 struct LevelCache {
 	/// The cashed walls of this level.
 	walls:   HashSet<GridCoords>,
+	/// The cashed doors of this level.
+	doors:   HashMap<GridCoords, (Entity, EntityIid, Door)>,
 	/// The cashed enemies of this level.
 	enemies: HashMap<GridCoords, Entity>,
+	/// The cashed keys of this level.
+	keys:    HashMap<GridCoords, (Entity, EntityIid)>,
 	/// The level width in tiles.
 	width:   i32,
 	/// The level height in tiles.
@@ -250,12 +265,27 @@ struct LevelCache {
 
 impl LevelCache {
 	/// Checks if [`GridCoords`] is a wall or outside of the Level.
-	fn movable(&self, grid_coords: GridCoords) -> Destination {
+	fn destination(
+		&self,
+		state: &State,
+		source: GridCoords,
+		destination: GridCoords,
+	) -> Destination {
 		// Currently Grid coords can't be smaller than 0.
-		if self.outside_boundary(grid_coords) {
-			Destination::BeyondBoundary
-		} else if self.walls.contains(&grid_coords) {
+		if self.outside_boundary(destination) {
+			if let Some((_, _, door)) = self.doors.get(&source) {
+				Destination::Door(door.clone())
+			} else {
+				Destination::BeyondBoundary
+			}
+		} else if self.walls.contains(&destination) {
 			Destination::Wall
+		} else if let Some((_, iid, _)) = self.doors.get(&destination) {
+			if *state.doors.get(iid).unwrap() {
+				Destination::Walkable
+			} else {
+				Destination::Wall
+			}
 		} else {
 			Destination::Walkable
 		}
@@ -271,14 +301,15 @@ impl LevelCache {
 }
 
 /// What the Destination of an attempted movement of the player is.
-#[derive(PartialEq, Eq)]
 enum Destination {
-	/// The potential destination is a Wall.
+	/// The potential destination is a wall.
 	Wall,
-	/// The potential destination is outside of the Level boundary.
+	/// The potential destination is outside of the level boundary.
 	BeyondBoundary,
 	/// The potential destination is walkable.
 	Walkable,
+	/// The potential destination is walkable.
+	Door(Door),
 }
 
 /// Startup system.
@@ -312,7 +343,7 @@ fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
 			},
 			..SpriteBundle::default()
 		},
-		TargetingMarker,
+		TargetingMarker(None),
 		GridCoords::default(),
 		Name::new("Tile Target Marker"),
 	));
@@ -329,6 +360,8 @@ fn level_spawn(
 	mut level_events: EventReader<'_, '_, LevelEvent>,
 	walls: Query<'_, '_, &GridCoords, (With<Wall>, Without<Player>)>,
 	enemies: Query<'_, '_, (&GridCoords, Entity), (With<Enemy>, Without<Player>)>,
+	keys: Query<'_, '_, (&GridCoords, Entity, &EntityIid), (With<Key>, Without<Player>)>,
+	doors: Query<'_, '_, (Entity, &GridCoords, &EntityIid, &Door), Without<Player>>,
 	mut player_entity_destination: ResMut<'_, PlayerEntityDestination>,
 	ldtk_entities: Query<'_, '_, (Entity, &EntityIid), Without<Player>>,
 	entity_grid_coords: Query<'_, '_, &GridCoords, Without<Player>>,
@@ -355,10 +388,24 @@ fn level_spawn(
 		enemies_map.insert(*grid_coords, entity);
 	}
 
+	let mut keys_map = HashMap::new();
+
+	for (grid_coords, entity, iid) in &keys {
+		keys_map.insert(*grid_coords, (entity, iid.clone()));
+	}
+
+	let mut doors_map = HashMap::new();
+
+	for (entity, grid_coords, iid, door) in &doors {
+		doors_map.insert(*grid_coords, (entity, iid.clone(), door.clone()));
+	}
+
 	// ... so we can update the [`LevelCache`] resource.
 	*level_cache = LevelCache {
 		walls:   walls.iter().copied().collect(),
 		enemies: enemies_map,
+		keys:    keys_map,
+		doors:   doors_map,
 		width:   level.px_wid / GRID_SIZE,
 		height:  level.px_hei / GRID_SIZE,
 	};
@@ -388,17 +435,25 @@ fn level_spawn(
 }
 
 /// Game state.
-#[derive(Default, Resource)]
+#[derive(Default, Reflect, Resource)]
+#[reflect(Resource)]
 struct State {
 	/// State of each door.
-	doors: HashMap<EntityIid, bool>,
+	doors:       HashMap<EntityIid, bool>,
+	/// State of each key.
+	keys:        HashMap<EntityIid, bool>,
+	/// Amount of keys the player possesses.
+	player_keys: u8,
 }
 
 /// Setup state for each entity.
 #[allow(clippy::needless_pass_by_value)]
 fn state(
+	mut commands: Commands<'_, '_>,
 	mut state: ResMut<'_, State>,
+	mut level_cache: ResMut<'_, LevelCache>,
 	mut doors: Query<'_, '_, (&EntityIid, &Door, &mut TextureAtlas), Added<Door>>,
+	mut keys: Query<'_, '_, (Entity, &EntityIid, &GridCoords), Added<Key>>,
 ) {
 	for (iid, door, mut atlas) in &mut doors {
 		let open = match state.doors.entry(iid.clone()) {
@@ -413,6 +468,18 @@ fn state(
 		}
 
 		state.doors.entry(door.entity.clone()).or_insert(open);
+	}
+
+	for (entity, iid, position) in &mut keys {
+		let taken = match state.keys.entry(iid.clone()) {
+			Entry::Occupied(value) => *value.get(),
+			Entry::Vacant(entry) => *entry.insert(false),
+		};
+
+		if taken {
+			level_cache.keys.remove(position).unwrap();
+			commands.entity(entity).insert(Visibility::Hidden);
+		}
 	}
 }
 
@@ -511,23 +578,72 @@ fn update_cursor_pos(
 	}
 }
 
+/// Lets the player attack an enemy with a mouseclick.
+#[allow(clippy::needless_pass_by_value)]
+fn attack(
+	buttons: Res<'_, ButtonInput<MouseButton>>,
+	target_marker: Query<'_, '_, &TargetingMarker>,
+	mut enemies: Query<'_, '_, &mut Health, With<Enemy>>,
+) {
+	if buttons.just_released(MouseButton::Left) {
+		if let Some(entity) = target_marker.single().0 {
+			if let Ok(mut health) = enemies.get_mut(entity) {
+				health.current = health.current.saturating_sub(5);
+			}
+		}
+	}
+}
+
 /// When an Entity with a healthbar is spawned we spawn a mesh to represent it.
 #[allow(clippy::needless_pass_by_value)]
 fn spawn_healthbar(
-	added: Query<'_, '_, Entity, Added<Health>>,
+	added: Query<'_, '_, (Entity, Option<&Enemy>), Added<Health>>,
 	mut commands: Commands<'_, '_>,
 	mut meshes: ResMut<'_, Assets<Mesh>>,
 	mut materials: ResMut<'_, Assets<ColorMaterial>>,
 ) {
-	for entity in &added {
+	for (entity, is_enemy) in &added {
 		commands.entity(entity).with_children(|entity| {
-			entity.spawn(MaterialMesh2dBundle {
-				mesh: meshes.add(Rectangle::new(32., 5.)).into(),
-				material: materials.add(Color::RED),
-				transform: Transform::from_translation(Vec3::new(0., 20., 0.1)),
-				..MaterialMesh2dBundle::default()
-			});
+			entity.spawn((
+				MaterialMesh2dBundle {
+					mesh: meshes.add(Rectangle::new(32., 5.)).into(),
+					material: materials.add(Color::RED),
+					transform: Transform::from_translation(Vec3::new(0., 20., 0.1)),
+					visibility: if is_enemy.is_some() {
+						Visibility::Hidden
+					} else {
+						Visibility::default()
+					},
+					..MaterialMesh2dBundle::default()
+				},
+				HealthBar,
+			));
 		});
+	}
+}
+
+/// Update size and position of the Healthbar.
+#[allow(clippy::needless_pass_by_value)]
+fn update_healthbar(
+	changed: Query<'_, '_, (&Health, &Children, Option<&Enemy>), Changed<Health>>,
+	mut transforms: Query<'_, '_, (&mut Visibility, &mut Transform), With<HealthBar>>,
+) {
+	for (health, children, enemy) in &changed {
+		for child in children {
+			if let Ok((mut visibility, mut transform)) = transforms.get_mut(*child) {
+				let percentage = f32::from(health.current) / f32::from(health.max);
+				transform.scale.x = percentage;
+				transform.translation.x = -16. * (1. - percentage);
+
+				if enemy.is_some() {
+					if percentage < 1. {
+						visibility.set_if_neq(Visibility::Visible);
+					} else {
+						visibility.set_if_neq(Visibility::Hidden);
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -535,26 +651,33 @@ fn spawn_healthbar(
 #[allow(clippy::needless_pass_by_value)]
 fn update_target_marker(
 	cursor_pos: Res<'_, CursorPos>,
-	mut target_marker_grid_coords: Query<
+	mut target_marker: Query<
 		'_,
 		'_,
-		(&mut Visibility, &mut GridCoords, &mut Sprite),
-		With<TargetingMarker>,
+		(
+			&mut TargetingMarker,
+			&mut Visibility,
+			&mut GridCoords,
+			&mut Sprite,
+		),
 	>,
 	level_cache: Res<'_, LevelCache>,
 ) {
-	let (mut visibility, mut grid_coords, mut sprite) = target_marker_grid_coords.single_mut();
+	let (mut marker, mut visibility, mut grid_coords, mut sprite) = target_marker.single_mut();
 
 	if level_cache.outside_boundary(cursor_pos.tile_pos) {
 		*visibility = Visibility::Hidden;
+		marker.set_if_neq(TargetingMarker(None));
 	} else {
 		visibility.set_if_neq(Visibility::Visible);
 		grid_coords.set_if_neq(cursor_pos.tile_pos);
 
-		if level_cache.enemies.contains_key(grid_coords.deref()) {
+		if let Some(entity) = level_cache.enemies.get(grid_coords.deref()) {
 			sprite.color = Color::RED;
+			marker.set_if_neq(TargetingMarker(Some(*entity)));
 		} else {
 			sprite.color = Color::WHITE;
+			marker.set_if_neq(TargetingMarker(None));
 		}
 	}
 }
@@ -577,7 +700,8 @@ fn camera_update(
 #[allow(clippy::needless_pass_by_value)]
 fn door_interactions(
 	mut state: ResMut<'_, State>,
-	mut doors: Query<'_, '_, (&EntityIid, &Door, &GridCoords, &mut TextureAtlas)>,
+	level_cache: Res<'_, LevelCache>,
+	mut doors_query: Query<'_, '_, &mut TextureAtlas, With<Door>>,
 	tile_map_size: Query<'_, '_, &TilemapSize>,
 	player: Query<'_, '_, &GridCoords, With<Player>>,
 	mut input: EventReader<'_, '_, KeyboardInput>,
@@ -605,13 +729,21 @@ fn door_interactions(
 		)
 		.iter()
 		{
-			for (iid, door, door_grid_coords, mut atlas) in &mut doors {
-				if TilePos::from(*door_grid_coords) == *tile_pos {
-					let open = state.doors.get_mut(iid).unwrap();
-					*open = !*open;
+			if let Some((entity, iid, door)) = level_cache.doors.get(&GridCoords::from(*tile_pos)) {
+				let State {
+					doors, player_keys, ..
+				} = state.deref_mut();
+
+				let open = doors.get_mut(iid).unwrap();
+
+				if !*open && *player_keys > 0 {
+					*open = true;
+					*player_keys -= 1;
 					#[allow(clippy::shadow_same)]
 					let open = *open;
 					*state.doors.get_mut(&door.entity).unwrap() = open;
+
+					let mut atlas = doors_query.get_mut(*entity).unwrap();
 
 					if open {
 						atlas.index = 133;
@@ -631,7 +763,7 @@ fn door_interactions(
 	clippy::type_complexity
 )]
 fn movement(
-	state: Res<'_, State>,
+	mut state: ResMut<'_, State>,
 	mut commands: Commands<'_, '_>,
 	mut input: EventReader<'_, '_, KeyboardInput>,
 	mut player: Query<
@@ -644,14 +776,14 @@ fn movement(
 			&mut Sprite,
 			&mut TextureAtlas,
 			&mut Animation,
-			Has<AnimationFinish>,
+			Option<&mut AnimationFinish>,
 		),
 		With<Player>,
 	>,
-	level_boundaries: Res<'_, LevelCache>,
+	level_cache: Res<'_, LevelCache>,
 	mut level_selection: ResMut<'_, LevelSelection>,
-	doors: Query<'_, '_, (&EntityIid, &GridCoords, &Door), (With<Door>, Without<Player>)>,
 	mut destination_entity: ResMut<'_, PlayerEntityDestination>,
+	mut arrived: EventWriter<'_, AnimationArrived>,
 ) {
 	let Some(input) = input.read().next() else {
 		return;
@@ -677,68 +809,78 @@ fn movement(
 		_ => return,
 	};
 
-	let (player, mut transform, mut grid_pos, mut sprite, mut atlas, mut animation, finish) =
+	let (player_entity, mut transform, mut grid_pos, mut sprite, mut atlas, mut animation, finish) =
 		player.single_mut();
 	let destination = *grid_pos + direction;
-	let mut movable = level_boundaries.movable(destination);
 
-	// If we the player is trying to move into a closed door we handle it like they are moving into
-	// a wall.
-	for (door, door_coord, _) in &doors {
-		if *door_coord == destination {
-			if !state.doors.get(door).unwrap() {
-				movable = Destination::Wall;
+	match level_cache.destination(state.deref(), *grid_pos, destination) {
+		Destination::Walkable => {
+			// Interrupts the animation.
+			transform.translation =
+				utils::grid_coords_to_translation(*grid_pos, IVec2::splat(GRID_SIZE))
+					.extend(transform.translation.z);
+
+			let mut player = commands.entity(player_entity);
+			player.insert(Animator::new(
+				Tween::new(
+					EaseMethod::Linear,
+					Duration::from_millis(250),
+					TransformPositionLens {
+						start: transform.translation,
+						end:   utils::grid_coords_to_translation(
+							destination,
+							IVec2::splat(GRID_SIZE),
+						)
+						.extend(transform.translation.z),
+					},
+				)
+				.with_completed_event(0),
+			));
+
+			let arrived_event = if let Some((_, iid)) = level_cache.keys.get(&destination) {
+				*state.keys.get_mut(iid).unwrap() = true;
+				state.player_keys += 1;
+				Some(destination)
+			} else {
+				None
+			};
+
+			// Interrupting the animation is fine, but send the event.
+			if let Some(mut finish) = finish {
+				if let Some(position) = finish.arrived_event {
+					arrived.send(AnimationArrived {
+						entity: player_entity,
+						position,
+					});
+				}
+
+				finish.arrived_event = arrived_event;
+			} else {
+				*animation = PlayerBundle::walking_animation();
+				atlas.index = animation.first;
+
+				player.insert(AnimationFinish {
+					arrived_event,
+					new_animation: Some(PlayerBundle::idle_animation()),
+				});
 			}
 
-			break;
+			*grid_pos = destination;
+
+			if let Some(flip) = flip {
+				sprite.flip_x = flip;
+			}
 		}
-	}
-
-	if let Destination::Walkable = movable {
-		transform.translation =
-			utils::grid_coords_to_translation(*grid_pos, IVec2::splat(GRID_SIZE))
-				.extend(transform.translation.z);
-
-		let mut player = commands.entity(player);
-		player.insert(Animator::new(
-			Tween::new(
-				EaseMethod::Linear,
-				Duration::from_millis(250),
-				TransformPositionLens {
-					start: transform.translation,
-					end:   utils::grid_coords_to_translation(destination, IVec2::splat(GRID_SIZE))
-						.extend(transform.translation.z),
-				},
-			)
-			.with_completed_event(0),
-		));
-
-		// If we are currently already walking, no changes are required.
-		if !finish {
-			*animation = PlayerBundle::walking_animation();
-			atlas.index = animation.first;
-
-			player.insert(AnimationFinish(PlayerBundle::idle_animation()));
-		}
-
-		*grid_pos = destination;
-
-		if let Some(flip) = flip {
-			sprite.flip_x = flip;
-		}
-	}
-
-	for (_, door_coord, destination_door) in &doors {
-		// If the Player is on a tile with a door and moves tries to move outside of the level we
-		// change levels.
-		if movable == Destination::BeyondBoundary && *door_coord == *grid_pos {
+		Destination::Wall => (),
+		Destination::Door(door) => {
 			if let LevelSelection::Iid(current_level) = level_selection.as_mut() {
-				*current_level = destination_door.level.clone();
-				destination_entity.0 = Some(destination_door.entity.clone());
+				*current_level = door.level;
+				destination_entity.0 = Some(door.entity);
 			} else {
 				unreachable!("levels should only be `LevelIid`")
 			}
 		}
+		Destination::BeyondBoundary => unreachable!("somehow dropped off the floor"),
 	}
 }
 
@@ -786,33 +928,115 @@ fn animate(time: Res<'_, Time>, mut query: Query<'_, '_, (&mut TextureAtlas, &mu
 	}
 }
 
-/// Switch animation when finished.
+/// What should happen after an animation has completed.
 #[derive(Component)]
-struct AnimationFinish(Animation);
+struct AnimationFinish {
+	/// Tile animation has finished on.
+	arrived_event: Option<GridCoords>,
+	/// Switch to a new animation.
+	new_animation: Option<Animation>,
+}
 
-/// Remove [`Animator`] after completion and transition to old animation
+/// Remove [`Animator`] after completion and potentially transition to old animation.
+#[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 fn finish_animation(
 	mut commands: Commands<'_, '_>,
 	mut completed: EventReader<'_, '_, TweenCompleted>,
+	mut arrived: EventWriter<'_, AnimationArrived>,
 	mut query: Query<
 		'_,
 		'_,
-		(&AnimationFinish, &mut TextureAtlas, &mut Animation),
+		(Entity, &AnimationFinish, &mut TextureAtlas, &mut Animation),
 		With<Animator<Transform>>,
 	>,
 ) {
 	for completed in completed.read() {
-		let mut entity = commands.entity(completed.entity);
+		let mut command = commands.entity(completed.entity);
 
 		// Transition to old animation.
-		if let Ok((finish, mut atlas, mut animation)) = query.get_mut(completed.entity) {
-			*animation.deref_mut() = finish.0.clone();
-			atlas.index = animation.first;
-			entity.remove::<AnimationFinish>();
+		if let Ok((entity, finish, mut atlas, mut animation)) = query.get_mut(completed.entity) {
+			if let Some(new_animation) = &finish.new_animation {
+				*animation.deref_mut() = new_animation.clone();
+				atlas.index = animation.first;
+			}
+
+			if let Some(position) = finish.arrived_event {
+				arrived.send(AnimationArrived { entity, position });
+			}
+
+			command.remove::<AnimationFinish>();
 		}
 
-		entity.remove::<Animator<Transform>>();
+		command.remove::<Animator<Transform>>();
 	}
+}
+
+/// Event fired when the animation has reached a tile or has been interrupted.
+#[derive(Event)]
+struct AnimationArrived {
+	/// Entity that arriveed.
+	entity:   Entity,
+	/// Arrived at which grid coordinates.
+	position: GridCoords,
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn animation_arrived_tile(
+	mut commands: Commands<'_, '_>,
+	mut level_cache: ResMut<'_, LevelCache>,
+	mut arrived: EventReader<'_, '_, AnimationArrived>,
+	player: Query<'_, '_, Entity, With<Player>>,
+) {
+	if arrived.is_empty() {
+		return;
+	}
+
+	let player = player.single();
+
+	for arrived in arrived.read() {
+		if arrived.entity == player {
+			if let Some((entity, _)) = level_cache.keys.remove(&arrived.position) {
+				commands.entity(entity).insert(Visibility::Hidden);
+			}
+		}
+	}
+}
+
+/// Item UI.
+#[allow(clippy::needless_pass_by_value)]
+fn item_ui(
+	asset_server: Res<'_, AssetServer>,
+	state: Res<'_, State>,
+	mut contexts: EguiContexts<'_, '_>,
+) {
+	let key_texture =
+		contexts.add_image(asset_server.load("Environment/Dungeon Prison/Assets/Props.png"));
+
+	let Some(context) = contexts.try_ctx_mut() else {
+		return;
+	};
+
+	SidePanel::right("items")
+		.resizable(false)
+		.show_separator_line(false)
+		.frame(Frame::none())
+		.show(context, |ui| {
+			ui.with_layout(Layout::top_down(Align::Max), |ui| {
+				if state.player_keys > 0 {
+					Frame::default()
+						.fill(Color32::BLACK)
+						.stroke(Stroke::new(2., Color32::WHITE))
+						.rounding(5.)
+						.show(ui, |ui| {
+							ui.label(format!("{}x", state.player_keys));
+							ui.add(Image::new((key_texture, egui::Vec2::new(64., 64.))).uv([
+								Pos2::new(1. / 400. * 32., 1. / 400. * 64.),
+								Pos2::new(1. / 400. * 48., 1. / 400. * 80.),
+							]))
+						});
+				}
+			})
+		});
 }
 
 fn main() {
@@ -823,6 +1047,7 @@ fn main() {
 			TilemapPlugin,
 			LdtkPlugin,
 			TweeningPlugin,
+			EguiPlugin,
 			WorldInspectorPlugin::new()
 				.run_if(|debug: Res<'_, Debug>| matches!(debug.deref(), Debug::Active { .. })),
 		))
@@ -838,6 +1063,7 @@ fn main() {
 				movement,
 				door_interactions,
 				spawn_healthbar,
+				(attack, update_healthbar).chain(),
 				(update_cursor_pos, update_target_marker).chain(),
 			)
 				.run_if(|debug: Res<'_, Debug>| matches!(debug.deref(), Debug::Inactive)),
@@ -845,9 +1071,11 @@ fn main() {
 		.add_systems(
 			PostUpdate,
 			(
+				item_ui.before(EguiSet::ProcessOutput),
 				animate,
 				(
 					finish_animation,
+					animation_arrived_tile,
 					translate_grid_coords_entities,
 					camera_update,
 				)
@@ -866,6 +1094,7 @@ fn main() {
 		.init_resource::<LevelCache>()
 		.init_resource::<CursorPos>()
 		.init_resource::<PlayerEntityDestination>()
+		.add_event::<AnimationArrived>()
 		.register_ldtk_entity::<PlayerBundle>("Player")
 		.register_ldtk_entity::<KeyBundle>("Key")
 		.register_ldtk_entity::<EnemyBundle>("Skeleton")
@@ -874,5 +1103,6 @@ fn main() {
 		.register_type::<Door>()
 		.register_type::<Health>()
 		.register_type::<LevelCache>()
+		.register_type::<State>()
 		.run();
 }
