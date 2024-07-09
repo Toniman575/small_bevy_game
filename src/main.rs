@@ -1,9 +1,12 @@
 //! TODO:
+//! - Improve item number.
+//! - Death when dropping to zero.
+//! - Drop key from enemy.
 //! - [Bug] Sometimes levels are not despawned correctly, leading to false walls and doors being
 //!   cached.
-//! - show all levels in debug mode
+//! - Show all levels in debug mode.
 
-#![allow(clippy::multiple_crate_versions)]
+#![allow(clippy::multiple_crate_versions, clippy::unimplemented)]
 
 use std::mem;
 use std::ops::{Deref, DerefMut};
@@ -12,7 +15,7 @@ use std::time::Duration;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
 use bevy::prelude::{AssetServer, *};
-use bevy::sprite::MaterialMesh2dBundle;
+use bevy::sprite::{Anchor, MaterialMesh2dBundle};
 use bevy::utils::{Entry, HashMap, HashSet};
 use bevy::window::PrimaryWindow;
 use bevy_ecs_ldtk::prelude::*;
@@ -60,6 +63,10 @@ impl From<&EntityInstance> for Health {
 #[derive(Component)]
 struct HealthBar;
 
+/// When an entity dies, it sends this event.
+#[derive(Event)]
+struct DeathEvent(Entity);
+
 /// Player marker component.
 #[derive(Default, Component)]
 struct Player;
@@ -102,18 +109,22 @@ impl PlayerBundle {
 	/// Return idle [`Animation`].
 	fn idle_animation() -> Animation {
 		Animation {
-			timer: Timer::from_seconds(0.25, TimerMode::Repeating),
-			first: 0,
-			last:  3,
+			timer:     Timer::from_seconds(0.25, TimerMode::Repeating),
+			first:     0,
+			last:      3,
+			repeating: true,
+			anchor:    None,
 		}
 	}
 
 	/// Return walking [`Animation`].
 	fn walking_animation() -> Animation {
 		Animation {
-			timer: Timer::from_seconds(0.1, TimerMode::Repeating),
-			first: 9,
-			last:  14,
+			timer:     Timer::from_seconds(0.1, TimerMode::Repeating),
+			first:     9,
+			last:      14,
+			repeating: true,
+			anchor:    None,
 		}
 	}
 }
@@ -173,9 +184,25 @@ impl EnemyBundle {
 	/// Return idle [`Animation`].
 	fn idle_animation() -> Animation {
 		Animation {
-			timer: Timer::from_seconds(0.25, TimerMode::Repeating),
-			first: 0,
-			last:  3,
+			timer:     Timer::from_seconds(0.25, TimerMode::Repeating),
+			first:     0,
+			last:      3,
+			repeating: true,
+			anchor:    None,
+		}
+	}
+
+	/// Return death [`Animation`].
+	fn death_animation() -> Animation {
+		Animation {
+			timer:     Timer::from_seconds(0.125, TimerMode::Repeating),
+			first:     16,
+			last:      23,
+			repeating: false,
+			anchor:    Some(Anchor::Custom(Vec2::new(
+				0.,
+				-(1. / 48. * ((48. - 32.) / 2.)),
+			))),
 		}
 	}
 }
@@ -347,6 +374,34 @@ fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
 		GridCoords::default(),
 		Name::new("Tile Target Marker"),
 	));
+}
+
+/// Our Spritesheets have sprites with different sized tiles in it so we fix them.
+#[allow(clippy::needless_pass_by_value)]
+fn fix_sprite_sheet(
+	mut texture_atlas_layouts: ResMut<'_, Assets<TextureAtlasLayout>>,
+	enemies: Query<'_, '_, &TextureAtlas, With<Enemy>>,
+	mut state: Local<'_, bool>,
+) {
+	if *state {
+		return;
+	}
+	if let Some(enemy) = enemies.iter().next() {
+		if let Some(layout) = texture_atlas_layouts.get_mut(&enemy.layout) {
+			*state = true;
+
+			for texture in layout
+				.textures
+				.get_mut(16..=23)
+				.expect("unexpected enemy skeleton sprite sheet size")
+				.iter_mut()
+			{
+				texture.max.y = 112.;
+			}
+
+			layout.textures.truncate(24);
+		}
+	}
 }
 
 /// Initialize states after level is spawned.
@@ -609,6 +664,7 @@ fn spawn_healthbar(
 					..MaterialMesh2dBundle::default()
 				},
 				HealthBar,
+				Name::new("Healthbar"),
 			));
 		});
 	}
@@ -617,10 +673,16 @@ fn spawn_healthbar(
 /// Update size and position of the Healthbar.
 #[allow(clippy::needless_pass_by_value)]
 fn update_healthbar(
-	changed: Query<'_, '_, (&Health, &Children, Option<&Enemy>), Changed<Health>>,
+	changed: Query<'_, '_, (Entity, &Health, &Children, Option<&Enemy>), Changed<Health>>,
 	mut transforms: Query<'_, '_, (&mut Visibility, &mut Transform), With<HealthBar>>,
+	mut death: EventWriter<'_, DeathEvent>,
 ) {
-	for (health, children, enemy) in &changed {
+	for (entity, health, children, enemy) in &changed {
+		if health.current == 0 {
+			death.send(DeathEvent(entity));
+			continue;
+		}
+
 		for child in children {
 			if let Ok((mut visibility, mut transform)) = transforms.get_mut(*child) {
 				let percentage = f32::from(health.current) / f32::from(health.max);
@@ -636,6 +698,48 @@ fn update_healthbar(
 				}
 			}
 		}
+	}
+}
+
+/// Handle when a death event was sent.
+#[allow(clippy::type_complexity)]
+fn death(
+	mut commands: Commands<'_, '_>,
+	mut deaths: EventReader<'_, '_, DeathEvent>,
+	mut animations: Query<
+		'_,
+		'_,
+		(
+			&GridCoords,
+			&mut TextureAtlas,
+			&mut Animation,
+			Has<Enemy>,
+			Has<Player>,
+		),
+	>,
+	mut level_cache: ResMut<'_, LevelCache>,
+) {
+	for event in deaths.read() {
+		let (grid_coords, mut atlas, mut animation, enemy, player) =
+			animations.get_mut(event.0).unwrap();
+
+		let death_animation = if enemy {
+			EnemyBundle::death_animation()
+		} else if player {
+			unimplemented!()
+		} else {
+			panic!("Player can't be enemy and visa versa.")
+		};
+
+		*animation = death_animation;
+		atlas.index = animation.first;
+
+		let mut entity_commands = commands.entity(event.0);
+		entity_commands.despawn_descendants();
+		level_cache
+			.enemies
+			.remove(grid_coords)
+			.expect("Enemy should be in level cache.");
 	}
 }
 
@@ -897,22 +1001,41 @@ fn translate_grid_coords_entities(
 #[derive(Clone, Component)]
 struct Animation {
 	/// Animation timing.
-	timer: Timer,
+	timer:     Timer,
 	/// First animation sprite.
-	first: usize,
+	first:     usize,
 	/// Last animation sprite.
-	last:  usize,
+	last:      usize,
+	/// Animation is repeated.
+	repeating: bool,
+	/// Custom anchor for this animation.
+	anchor:    Option<Anchor>,
 }
 
 /// Animate entities.
 #[allow(clippy::needless_pass_by_value)]
-fn animate(time: Res<'_, Time>, mut query: Query<'_, '_, (&mut TextureAtlas, &mut Animation)>) {
-	for (mut atlas, mut animation) in &mut query {
+fn animate(
+	mut commands: Commands<'_, '_>,
+	time: Res<'_, Time>,
+	mut query: Query<'_, '_, (Entity, &mut Sprite, &mut TextureAtlas, &mut Animation)>,
+) {
+	for (entity, mut sprite, mut atlas, mut animation) in &mut query {
+		if let Some(anchor) = animation.anchor {
+			sprite.anchor = anchor;
+		} else {
+			sprite.anchor = Anchor::default();
+		}
+
 		animation.timer.tick(time.delta());
 
 		if animation.timer.just_finished() {
 			atlas.index = if atlas.index == animation.last {
-				animation.first
+				if animation.repeating {
+					animation.first
+				} else {
+					commands.entity(entity).remove::<Animation>();
+					return;
+				}
 			} else {
 				atlas.index + 1
 			};
@@ -1047,7 +1170,7 @@ fn main() {
 		// See <https://github.com/bevyengine/bevy/issues/1949>.
 		.insert_resource(Msaa::Off)
 		.add_systems(Startup, startup)
-		.add_systems(First, level_spawn)
+		.add_systems(First, (fix_sprite_sheet, level_spawn))
 		.add_systems(PreUpdate, debug)
 		.add_systems(
 			Update,
@@ -1055,7 +1178,7 @@ fn main() {
 				movement,
 				door_interactions,
 				spawn_healthbar,
-				(attack, update_healthbar).chain(),
+				(attack, update_healthbar, death).chain(),
 				(update_cursor_pos, update_target_marker).chain(),
 			)
 				.run_if(|debug: Res<'_, Debug>| matches!(debug.deref(), Debug::Inactive)),
@@ -1087,6 +1210,7 @@ fn main() {
 		.init_resource::<CursorPos>()
 		.init_resource::<PlayerEntityDestination>()
 		.add_event::<AnimationArrived>()
+		.add_event::<DeathEvent>()
 		.register_ldtk_entity::<PlayerBundle>("Player")
 		.register_ldtk_entity::<KeyBundle>("Key")
 		.register_ldtk_entity::<EnemyBundle>("Skeleton")
