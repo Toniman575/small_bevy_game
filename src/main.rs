@@ -356,12 +356,19 @@ fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
 	clippy::type_complexity
 )]
 fn level_spawn(
+	mut commands: Commands<'_, '_>,
+	mut state: ResMut<'_, State>,
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut level_events: EventReader<'_, '_, LevelEvent>,
 	walls: Query<'_, '_, &GridCoords, (With<Wall>, Without<Player>)>,
 	enemies: Query<'_, '_, (&GridCoords, Entity), (With<Enemy>, Without<Player>)>,
 	keys: Query<'_, '_, (&GridCoords, Entity, &EntityIid), (With<Key>, Without<Player>)>,
-	doors: Query<'_, '_, (Entity, &GridCoords, &EntityIid, &Door), Without<Player>>,
+	mut doors: Query<
+		'_,
+		'_,
+		(Entity, &GridCoords, &EntityIid, &mut TextureAtlas, &Door),
+		Without<Player>,
+	>,
 	mut player_entity_destination: ResMut<'_, PlayerEntityDestination>,
 	ldtk_entities: Query<'_, '_, (Entity, &EntityIid), Without<Player>>,
 	entity_grid_coords: Query<'_, '_, &GridCoords, Without<Player>>,
@@ -390,14 +397,36 @@ fn level_spawn(
 
 	let mut keys_map = HashMap::new();
 
-	for (grid_coords, entity, iid) in &keys {
-		keys_map.insert(*grid_coords, (entity, iid.clone()));
+	for (position, entity, iid) in &keys {
+		let taken = match state.keys.entry(iid.clone()) {
+			Entry::Occupied(value) => *value.get(),
+			Entry::Vacant(entry) => *entry.insert(false),
+		};
+
+		if taken {
+			commands.entity(entity).insert(Visibility::Hidden);
+		} else {
+			keys_map.insert(*position, (entity, iid.clone()));
+		}
 	}
 
 	let mut doors_map = HashMap::new();
 
-	for (entity, grid_coords, iid, door) in &doors {
+	for (entity, grid_coords, iid, mut atlas, door) in &mut doors {
 		doors_map.insert(*grid_coords, (entity, iid.clone(), door.clone()));
+
+		let open = match state.doors.entry(iid.clone()) {
+			Entry::Occupied(value) => *value.get(),
+			Entry::Vacant(entry) => *entry.insert(false),
+		};
+
+		if open {
+			atlas.index = 133;
+		} else {
+			atlas.index = 108;
+		}
+
+		state.doors.entry(door.entity.clone()).or_insert(open);
 	}
 
 	// ... so we can update the [`LevelCache`] resource.
@@ -444,43 +473,6 @@ struct State {
 	keys:        HashMap<EntityIid, bool>,
 	/// Amount of keys the player possesses.
 	player_keys: u8,
-}
-
-/// Setup state for each entity.
-#[allow(clippy::needless_pass_by_value)]
-fn state(
-	mut commands: Commands<'_, '_>,
-	mut state: ResMut<'_, State>,
-	mut level_cache: ResMut<'_, LevelCache>,
-	mut doors: Query<'_, '_, (&EntityIid, &Door, &mut TextureAtlas), Added<Door>>,
-	mut keys: Query<'_, '_, (Entity, &EntityIid, &GridCoords), Added<Key>>,
-) {
-	for (iid, door, mut atlas) in &mut doors {
-		let open = match state.doors.entry(iid.clone()) {
-			Entry::Occupied(value) => *value.get(),
-			Entry::Vacant(entry) => *entry.insert(false),
-		};
-
-		if open {
-			atlas.index = 133;
-		} else {
-			atlas.index = 108;
-		}
-
-		state.doors.entry(door.entity.clone()).or_insert(open);
-	}
-
-	for (entity, iid, position) in &mut keys {
-		let taken = match state.keys.entry(iid.clone()) {
-			Entry::Occupied(value) => *value.get(),
-			Entry::Vacant(entry) => *entry.insert(false),
-		};
-
-		if taken {
-			level_cache.keys.remove(position).unwrap();
-			commands.entity(entity).insert(Visibility::Hidden);
-		}
-	}
 }
 
 /// Stores debug state.
@@ -1056,7 +1048,7 @@ fn main() {
 		.insert_resource(Msaa::Off)
 		.add_systems(Startup, startup)
 		.add_systems(First, level_spawn)
-		.add_systems(PreUpdate, (state, debug))
+		.add_systems(PreUpdate, debug)
 		.add_systems(
 			Update,
 			(
