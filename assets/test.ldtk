@@ -11,7 +11,7 @@
 	"iid": "32dcd460-25d0-11ef-be0e-e7ac9f6e32a3",
 	"jsonVersion": "1.5.3",
 	"appBuildId": 473703,
-	"nextUid": 96,
+	"nextUid": 97,
 	"identifierStyle": "Capitalize",
 	"toc": [],
 	"worldLayout": "GridVania",
@@ -454,6 +454,43 @@
 					"allowedRefsEntityUid": null,
 					"allowedRefTags": [],
 					"tilesetUid": null
+				},
+				{
+					"identifier": "Drops",
+					"doc": null,
+					"__type": "Array<String>",
+					"uid": 96,
+					"type": "F_String",
+					"isArray": true,
+					"canBeNull": false,
+					"arrayMinLength": null,
+					"arrayMaxLength": null,
+					"editorDisplayMode": "Hidden",
+					"editorDisplayScale": 1,
+					"editorDisplayPos": "Above",
+					"editorLinkStyle": "StraightArrow",
+					"editorDisplayColor": null,
+					"editorAlwaysShow": false,
+					"editorShowInWorld": true,
+					"editorCutLongValues": true,
+					"editorTextSuffix": null,
+					"editorTextPrefix": null,
+					"useForSmartColor": false,
+					"exportToToc": false,
+					"searchable": false,
+					"min": null,
+					"max": null,
+					"regex": null,
+					"acceptFileTypes": null,
+					"defaultOverride": null,
+					"textLanguageMode": null,
+					"symmetricalRef": false,
+					"autoChainRef": true,
+					"allowOutOfLevelRef": true,
+					"allowedRefs": "OnlySame",
+					"allowedRefsEntityUid": null,
+					"allowedRefTags": [],
+					"tilesetUid": null
 				}
 			]
 		},
@@ -656,7 +693,13 @@
 							"height": 16,
 							"defUid": 85,
 							"px": [184,72],
-							"fieldInstances": [{ "__identifier": "Health", "__type": "Int", "__value": 50, "__tile": null, "defUid": 94, "realEditorValues": [] }],
+							"fieldInstances": [
+								{ "__identifier": "Health", "__type": "Int", "__value": 50, "__tile": null, "defUid": 94, "realEditorValues": [] },
+								{ "__identifier": "Drops", "__type": "Array<String>", "__value": ["Key"], "__tile": null, "defUid": 96, "realEditorValues": [{
+									"id": "V_String",
+									"params": ["Key"]
+								}] }
+							],
 							"__worldX": 184,
 							"__worldY": 328
 						}

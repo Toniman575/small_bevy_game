@@ -1,7 +1,32 @@
 //! TODO:
-//! - Improve item number.
-//! - Death when dropping to zero.
-//! - Drop key from enemy.
+//! - Refactor Code
+//!   - Update to bevy 0.14 if possible.
+//!   - Split into multiple files.
+//!   - Replace animation code with <https://github.com/merwaaan/bevy_spritesheet_animation>.
+//! - Drop key from enemy
+//!   - Spawn key in level.
+//!   - Store key in level cache and state.
+//!   - Make key invisible and turn visible with `AnimationFinished`.
+//!   - Spawn key in `level_spawn` from state.
+//! - Improve combat
+//!   - Attack enemy when in range only.
+//!   - Feedback when not in range.
+//! - Design turn system
+//!   - Assign order to each enemy.
+//!   - Run system after player has made their action with each enemy doing theirs.
+//!   - Enemy walks towards player in their action with A*.
+//!   - When in range, enemy attacks player.
+//! - Line of sight
+//!   - FoW for player.
+//!   - When player goes out of LoS enemies go to last known position and "wait" before returning to
+//!     their spawn point.
+//! - Abilities
+//!   - Show abilities to player.
+//!   - Implement tooltip.
+//!   - Make sure its easy to add new abilities.
+//! - Debuffs
+//!   - Implement bleeding debuff on enemies, think about presentation.
+//!   - Make sure its easy to integrate with abilities and add new ones.
 //! - [Bug] Sometimes levels are not despawned correctly, leading to false walls and doors being
 //!   cached.
 //! - Show all levels in debug mode.
@@ -20,16 +45,15 @@ use bevy::utils::{Entry, HashMap, HashSet};
 use bevy::window::PrimaryWindow;
 use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
+use bevy_ecs_tilemap::helpers::square_grid::neighbors::Neighbors;
 use bevy_ecs_tilemap::prelude::*;
-use bevy_egui::egui::{Align, Layout, Pos2};
 use bevy_egui::{egui, EguiPlugin, EguiSet};
 use bevy_inspector_egui::bevy_egui::EguiContexts;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_pancam::{MoveMode, PanCam, PanCamPlugin};
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween, TweenCompleted, TweeningPlugin};
-use egui::{Color32, Frame, Image, SidePanel, Stroke};
-use helpers::square_grid::neighbors::Neighbors;
+use egui::{Align, Align2, Color32, FontId, Frame, Layout, Pos2, Rect, Sense, SidePanel, Stroke};
 
 /// The size of the Grid in pixels.
 const GRID_SIZE: i32 = 16;
@@ -133,7 +157,7 @@ impl PlayerBundle {
 #[derive(Component, Default)]
 struct Key;
 
-/// Player bundle.
+/// Key bundle.
 #[derive(Bundle, Default, LdtkEntity)]
 struct KeyBundle {
 	/// Key marker component.
@@ -144,6 +168,25 @@ struct KeyBundle {
 	/// Key grid coordinates.
 	#[grid_coords]
 	grid_coords:         GridCoords,
+}
+
+/// Component for tracking the item drops of enemies entities.
+#[derive(Clone, Component, Debug, Default, Reflect, PartialEq, Eq)]
+struct Drops(Vec<String>);
+
+#[allow(clippy::fallible_impl_from)]
+impl From<&EntityInstance> for Drops {
+	fn from(entity_instance: &EntityInstance) -> Self {
+		let reference = entity_instance
+			.get_maybe_strings_field("Drops")
+			.expect("expected entity to have non-nullable `Drops` string array field")
+			.iter()
+			.cloned()
+			.map(|drop| drop.expect("expected non-nullable string field"))
+			.collect();
+
+		Self(reference)
+	}
 }
 
 /// Enemy marker component.
@@ -158,6 +201,9 @@ struct EnemyBundle {
 	/// Health of the enemy.
 	#[from_entity_instance]
 	health:              Health,
+	#[from_entity_instance]
+	/// A list of items this enemy drops on death.
+	drops:               Drops,
 	/// Sprite bundle.
 	#[sprite_sheet_bundle]
 	sprite_sheet_bundle: SpriteSheetBundle,
@@ -173,6 +219,7 @@ impl Default for EnemyBundle {
 		Self {
 			enemy:               Enemy,
 			health:              Health::default(),
+			drops:               Drops::default(),
 			sprite_sheet_bundle: SpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
 			animation:           Self::idle_animation(),
@@ -298,7 +345,6 @@ impl LevelCache {
 		source: GridCoords,
 		destination: GridCoords,
 	) -> Destination {
-		// Currently Grid coords can't be smaller than 0.
 		if self.outside_boundary(destination) {
 			if let Some((_, _, door)) = self.doors.get(&source) {
 				Destination::Door(door.clone())
@@ -313,6 +359,8 @@ impl LevelCache {
 			} else {
 				Destination::Wall
 			}
+		} else if self.enemies.contains_key(&destination) {
+			Destination::Enemy
 		} else {
 			Destination::Walkable
 		}
@@ -320,6 +368,7 @@ impl LevelCache {
 
 	/// Checks if [`GridCoords`] is outside of the Level.
 	const fn outside_boundary(&self, grid_coords: GridCoords) -> bool {
+		// Currently Grid coords can't be smaller than 0.
 		grid_coords.x < 0
 			|| grid_coords.y < 0
 			|| grid_coords.x >= self.width
@@ -335,6 +384,8 @@ enum Destination {
 	BeyondBoundary,
 	/// The potential destination is walkable.
 	Walkable,
+	/// An enemy is occupying the potential destination.
+	Enemy,
 	/// The potential destination is walkable.
 	Door(Door),
 }
@@ -711,6 +762,7 @@ fn death(
 		'_,
 		(
 			&GridCoords,
+			&mut Transform,
 			&mut TextureAtlas,
 			&mut Animation,
 			Has<Enemy>,
@@ -720,7 +772,7 @@ fn death(
 	mut level_cache: ResMut<'_, LevelCache>,
 ) {
 	for event in deaths.read() {
-		let (grid_coords, mut atlas, mut animation, enemy, player) =
+		let (grid_coords, mut transform, mut atlas, mut animation, enemy, player) =
 			animations.get_mut(event.0).unwrap();
 
 		let death_animation = if enemy {
@@ -730,6 +782,8 @@ fn death(
 		} else {
 			panic!("Player can't be enemy and visa versa.")
 		};
+
+		transform.translation.z -= 0.1;
 
 		*animation = death_animation;
 		atlas.index = animation.first;
@@ -967,7 +1021,7 @@ fn movement(
 				sprite.flip_x = flip;
 			}
 		}
-		Destination::Wall => (),
+		Destination::Wall | Destination::Enemy => (),
 		Destination::Door(door) => {
 			if let LevelSelection::Iid(current_level) = level_selection.as_mut() {
 				*current_level = door.level;
@@ -1143,11 +1197,51 @@ fn item_ui(
 						.stroke(Stroke::new(2., Color32::WHITE))
 						.rounding(5.)
 						.show(ui, |ui| {
-							ui.label(format!("{}x", state.player_keys));
-							ui.add(Image::new((key_texture, egui::Vec2::new(64., 64.))).uv([
-								Pos2::new(1. / 400. * 32., 1. / 400. * 64.),
-								Pos2::new(1. / 400. * 48., 1. / 400. * 80.),
-							]))
+							let (response, painter) = ui.allocate_painter(
+								egui::Vec2::new(64., 64.),
+								Sense {
+									click:     false,
+									drag:      false,
+									focusable: false,
+								},
+							);
+
+							painter.image(
+								key_texture,
+								response.rect,
+								Rect::from([
+									Pos2::new(1. / 400. * 32., 1. / 400. * 64.),
+									Pos2::new(1. / 400. * 48., 1. / 400. * 80.),
+								]),
+								Color32::WHITE,
+							);
+
+							let text = format!("{}x", state.player_keys);
+
+							// Text shadow.
+							painter.text(
+								(response.rect.right_top() - Pos2::new(4., -4.)).to_pos2(),
+								Align2::RIGHT_TOP,
+								&text,
+								FontId {
+									size: 24.,
+									..FontId::default()
+								},
+								Color32::BLACK,
+							);
+
+							painter.text(
+								(response.rect.right_top() - Pos2::new(2., -2.)).to_pos2(),
+								Align2::RIGHT_TOP,
+								text,
+								FontId {
+									size: 24.,
+									..FontId::default()
+								},
+								Color32::WHITE,
+							);
+
+							response
 						});
 				}
 			})
@@ -1217,6 +1311,7 @@ fn main() {
 		.register_ldtk_entity::<DoorBundle>("Door")
 		.register_ldtk_int_cell::<WallBundle>(1)
 		.register_type::<Door>()
+		.register_type::<Drops>()
 		.register_type::<Health>()
 		.register_type::<LevelCache>()
 		.register_type::<State>()
