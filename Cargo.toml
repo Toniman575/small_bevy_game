@@ -5,17 +5,17 @@ publish = false
 version = "0.0.0"
 
 [dependencies]
-bevy = "0.13"
-bevy-inspector-egui = "0.24"
+bevy = "0.14"
+bevy-inspector-egui = "0.25"
 bevy_ecs_ldtk = "0.9"
-bevy_ecs_tilemap = "0.12"
-bevy_egui = "0.27"
-bevy_pancam = { version = "0.11", features = ["bevy_egui"] }
-bevy_tweening = "0.10"
+bevy_ecs_tilemap = { version = "0.14", default-features = false }
+bevy_egui = "0.28"
+bevy_pancam = { version = "0.12", features = ["bevy_egui"] }
+bevy_tweening = "0.11"
 
 [patch.crates-io]
-bevy_ecs_ldtk = { git = "https://github.com/Trouv/bevy_ecs_ldtk", rev = "617b108dfc22799047cdb4d2c84c3cdfba7e985a" }
-bevy_ecs_tilemap = { git = "https://github.com/StarArawn/bevy_ecs_tilemap", rev = "e4f3cc668110d9a46f6fe407db4f6d4daeabc3d2" }
+bevy_ecs_ldtk = { git = "https://github.com/MScottMcBee/bevy_ecs_ldtk", rev = "dd5b2be0fa46beb4996d260f2d79bd1acbd1fe54" }
+bevy_ecs_tilemap = { git = "https://github.com/StarArawn/bevy_ecs_tilemap", rev = "aee4779c50f22dceaef946218260caf34011a757" }
 bevy_input = { git = "https://github.com/daxpedda/bevy", branch = "small-bevy-game" }
 bevy_pancam = { git = "https://github.com/Toniman575/bevy_pancam", branch = "keyboard-movement" }
 bevy_winit = { git = "https://github.com/daxpedda/bevy", branch = "small-bevy-game" }

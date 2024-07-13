@@ -1,6 +1,5 @@
 //! TODO:
 //! - Refactor Code
-//!   - Update to bevy 0.14 if possible.
 //!   - Split into multiple files.
 //!   - Replace animation code with <https://github.com/merwaaan/bevy_spritesheet_animation>.
 //! - Drop key from enemy
@@ -105,7 +104,7 @@ struct PlayerBundle {
 	health:              Health,
 	/// Sprite bundle.
 	#[sprite_sheet_bundle]
-	sprite_sheet_bundle: SpriteSheetBundle,
+	sprite_sheet_bundle: LdtkSpriteSheetBundle,
 	/// Player grid coordinates.
 	#[grid_coords]
 	grid_coords:         GridCoords,
@@ -121,7 +120,7 @@ impl Default for PlayerBundle {
 		Self {
 			player:              Player,
 			health:              Health::default(),
-			sprite_sheet_bundle: SpriteSheetBundle::default(),
+			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
 			animation:           Self::idle_animation(),
 			worldly:             Worldly::default(),
@@ -164,7 +163,7 @@ struct KeyBundle {
 	key:                 Key,
 	/// Sprite bundle.
 	#[sprite_sheet_bundle]
-	sprite_sheet_bundle: SpriteSheetBundle,
+	sprite_sheet_bundle: LdtkSpriteSheetBundle,
 	/// Key grid coordinates.
 	#[grid_coords]
 	grid_coords:         GridCoords,
@@ -206,7 +205,7 @@ struct EnemyBundle {
 	drops:               Drops,
 	/// Sprite bundle.
 	#[sprite_sheet_bundle]
-	sprite_sheet_bundle: SpriteSheetBundle,
+	sprite_sheet_bundle: LdtkSpriteSheetBundle,
 	/// Player grid coordinates.
 	#[grid_coords]
 	grid_coords:         GridCoords,
@@ -220,7 +219,7 @@ impl Default for EnemyBundle {
 			enemy:               Enemy,
 			health:              Health::default(),
 			drops:               Drops::default(),
-			sprite_sheet_bundle: SpriteSheetBundle::default(),
+			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
 			animation:           Self::idle_animation(),
 		}
@@ -310,7 +309,7 @@ impl From<&EntityInstance> for Door {
 struct DoorBundle {
 	/// Sprite bundle.
 	#[sprite_sheet_bundle]
-	sprite_sheet_bundle: SpriteSheetBundle,
+	sprite_sheet_bundle: LdtkSpriteSheetBundle,
 	#[from_entity_instance]
 	/// Door data.
 	door:                Door,
@@ -427,34 +426,6 @@ fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
 	));
 }
 
-/// Our Spritesheets have sprites with different sized tiles in it so we fix them.
-#[allow(clippy::needless_pass_by_value)]
-fn fix_sprite_sheet(
-	mut texture_atlas_layouts: ResMut<'_, Assets<TextureAtlasLayout>>,
-	enemies: Query<'_, '_, &TextureAtlas, With<Enemy>>,
-	mut state: Local<'_, bool>,
-) {
-	if *state {
-		return;
-	}
-	if let Some(enemy) = enemies.iter().next() {
-		if let Some(layout) = texture_atlas_layouts.get_mut(&enemy.layout) {
-			*state = true;
-
-			for texture in layout
-				.textures
-				.get_mut(16..=23)
-				.expect("unexpected enemy skeleton sprite sheet size")
-				.iter_mut()
-			{
-				texture.max.y = 112.;
-			}
-
-			layout.textures.truncate(24);
-		}
-	}
-}
-
 /// Initialize states after level is spawned.
 #[allow(
 	clippy::needless_pass_by_value,
@@ -466,14 +437,15 @@ fn level_spawn(
 	mut state: ResMut<'_, State>,
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut level_events: EventReader<'_, '_, LevelEvent>,
+	mut texture_atlas_layouts: ResMut<'_, Assets<TextureAtlasLayout>>,
 	walls: Query<'_, '_, &GridCoords, (With<Wall>, Without<Player>)>,
-	enemies: Query<'_, '_, (&GridCoords, Entity), (With<Enemy>, Without<Player>)>,
+	enemies: Query<'_, '_, (&GridCoords, Entity, &TextureAtlas), (With<Enemy>, Without<Player>)>,
 	keys: Query<'_, '_, (&GridCoords, Entity, &EntityIid), (With<Key>, Without<Player>)>,
 	mut doors: Query<
 		'_,
 		'_,
 		(Entity, &GridCoords, &EntityIid, &mut TextureAtlas, &Door),
-		Without<Player>,
+		(Without<Player>, Without<Enemy>),
 	>,
 	mut player_entity_destination: ResMut<'_, PlayerEntityDestination>,
 	ldtk_entities: Query<'_, '_, (Entity, &EntityIid), Without<Player>>,
@@ -497,7 +469,7 @@ fn level_spawn(
 
 	let mut enemies_map = HashMap::new();
 
-	for (grid_coords, entity) in &enemies {
+	for (grid_coords, entity, _) in &enemies {
 		enemies_map.insert(*grid_coords, entity);
 	}
 
@@ -566,6 +538,22 @@ fn level_spawn(
 		});
 
 		player_entity_destination.0 = None;
+	}
+
+	// Our Spritesheets have sprites with different sized tiles in it so we fix them.
+	if let Some((_, _, enemy)) = enemies.iter().next() {
+		if let Some(layout) = texture_atlas_layouts.get_mut(&enemy.layout) {
+			for texture in layout
+				.textures
+				.get_mut(16..=23)
+				.expect("unexpected enemy skeleton sprite sheet size")
+				.iter_mut()
+			{
+				texture.max.y = 112;
+			}
+
+			layout.textures.truncate(24);
+		}
 	}
 }
 
@@ -683,7 +671,7 @@ fn attack(
 	target_marker: Query<'_, '_, &TargetingMarker>,
 	mut enemies: Query<'_, '_, &mut Health, With<Enemy>>,
 ) {
-	if buttons.just_released(MouseButton::Left) {
+	if buttons.just_pressed(MouseButton::Left) {
 		if let Some(entity) = target_marker.single().0 {
 			if let Ok(mut health) = enemies.get_mut(entity) {
 				health.current = health.current.saturating_sub(5);
@@ -705,7 +693,7 @@ fn spawn_healthbar(
 			entity.spawn((
 				MaterialMesh2dBundle {
 					mesh: meshes.add(Rectangle::new(32., 5.)).into(),
-					material: materials.add(Color::RED),
+					material: materials.add(Color::from(Srgba::RED)),
 					transform: Transform::from_translation(Vec3::new(0., 20., 0.1)),
 					visibility: if is_enemy.is_some() {
 						Visibility::Hidden
@@ -823,7 +811,7 @@ fn update_target_marker(
 		grid_coords.set_if_neq(cursor_pos.tile_pos);
 
 		if let Some(entity) = level_cache.enemies.get(grid_coords.deref()) {
-			sprite.color = Color::RED;
+			sprite.color = Srgba::RED.into();
 			marker.set_if_neq(TargetingMarker(Some(*entity)));
 		} else {
 			sprite.color = Color::WHITE;
@@ -1264,7 +1252,7 @@ fn main() {
 		// See <https://github.com/bevyengine/bevy/issues/1949>.
 		.insert_resource(Msaa::Off)
 		.add_systems(Startup, startup)
-		.add_systems(First, (fix_sprite_sheet, level_spawn))
+		.add_systems(First, level_spawn)
 		.add_systems(PreUpdate, debug)
 		.add_systems(
 			Update,
