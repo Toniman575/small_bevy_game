@@ -2,19 +2,15 @@
 //! - Refactor Code
 //!   - Split into multiple files.
 //!   - Replace animation code with <https://github.com/merwaaan/bevy_spritesheet_animation>.
-//! - Drop key from enemy
-//!   - Spawn key in level.
-//!   - Store key in level cache and state.
-//!   - Make key invisible and turn visible with `AnimationFinished`.
-//!   - Spawn key in `level_spawn` from state.
 //! - Improve combat
-//!   - Attack enemy when in range only.
+//!   - Handle attacks through events.
 //!   - Feedback when not in range.
 //! - Design turn system
 //!   - Assign order to each enemy.
 //!   - Run system after player has made their action with each enemy doing theirs.
 //!   - Enemy walks towards player in their action with A*.
 //!   - When in range, enemy attacks player.
+//!   - Drop items in neighbouring tiles if full.
 //! - Line of sight
 //!   - FoW for player.
 //!   - When player goes out of LoS enemies go to last known position and "wait" before returning to
@@ -28,6 +24,7 @@
 //!   - Make sure its easy to integrate with abilities and add new ones.
 //! - [Bug] Sometimes levels are not despawned correctly, leading to false walls and doors being
 //!   cached.
+//! - [Bug] Fully loaded levels, before cleanup, can sometimes be seen for a single frame.
 //! - Show all levels in debug mode.
 
 #![allow(clippy::multiple_crate_versions, clippy::unimplemented)]
@@ -52,7 +49,7 @@ use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_pancam::{MoveMode, PanCam, PanCamPlugin};
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween, TweenCompleted, TweeningPlugin};
-use egui::{Align, Align2, Color32, FontId, Frame, Layout, Pos2, Rect, Sense, SidePanel, Stroke};
+use egui::{Align, Align2, Color32, FontId, Frame, Layout, Pos2, Sense, SidePanel, Stroke};
 
 /// The size of the Grid in pixels.
 const GRID_SIZE: i32 = 16;
@@ -90,6 +87,42 @@ struct HealthBar;
 #[derive(Event)]
 struct DeathEvent(Entity);
 
+/// An ability an entity can perform.
+#[derive(Reflect, Default)]
+struct Ability {
+	/// The range in manhatten distance of the ability.
+	range: u8,
+	/// The power of the ability.
+	power: u16,
+}
+
+impl Ability {
+	/// Creates an ability.
+	const fn new(range: u8, power: u16) -> Self {
+		Self { range, power }
+	}
+
+	/// Checks if ability is in range.
+	fn in_manhatten_range(&self, origin: GridCoords, target: GridCoords) -> bool {
+		let distance = (target.x - origin.x).abs() + (target.y - origin.y).abs();
+
+		distance <= self.range.into()
+	}
+}
+
+/// The collection of abilities an entity can perform.
+#[derive(Reflect, Component)]
+struct Spellbook(HashMap<String, Ability>);
+
+impl Default for Spellbook {
+	fn default() -> Self {
+		Self(HashMap::from([(
+			String::from("Autoattack"),
+			Ability::new(1, 5),
+		)]))
+	}
+}
+
 /// Player marker component.
 #[derive(Default, Component)]
 struct Player;
@@ -102,6 +135,8 @@ struct PlayerBundle {
 	/// Health of the player.
 	#[from_entity_instance]
 	health:              Health,
+	/// Abilities the player can perform.
+	attacks:             Spellbook,
 	/// Sprite bundle.
 	#[sprite_sheet_bundle]
 	sprite_sheet_bundle: LdtkSpriteSheetBundle,
@@ -120,6 +155,7 @@ impl Default for PlayerBundle {
 		Self {
 			player:              Player,
 			health:              Health::default(),
+			attacks:             Spellbook::default(),
 			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
 			animation:           Self::idle_animation(),
@@ -329,11 +365,20 @@ struct LevelCache {
 	/// The cashed enemies of this level.
 	enemies: HashMap<GridCoords, Entity>,
 	/// The cashed keys of this level.
-	keys:    HashMap<GridCoords, (Entity, EntityIid)>,
+	keys:    HashMap<GridCoords, (Entity, ItemSource)>,
 	/// The level width in tiles.
 	width:   i32,
 	/// The level height in tiles.
 	height:  i32,
+}
+
+/// Source of item could be LDTK level or drop from enemy.
+#[derive(Eq, Hash, PartialEq, Reflect)]
+enum ItemSource {
+	/// LDTK level.
+	Static(EntityIid),
+	/// Drop from enemy.
+	Loot(EntityIid),
 }
 
 impl LevelCache {
@@ -439,7 +484,12 @@ fn level_spawn(
 	mut level_events: EventReader<'_, '_, LevelEvent>,
 	mut texture_atlas_layouts: ResMut<'_, Assets<TextureAtlasLayout>>,
 	walls: Query<'_, '_, &GridCoords, (With<Wall>, Without<Player>)>,
-	enemies: Query<'_, '_, (&GridCoords, Entity, &TextureAtlas), (With<Enemy>, Without<Player>)>,
+	enemies: Query<
+		'_,
+		'_,
+		(&GridCoords, Entity, &EntityIid, &TextureAtlas, &Drops),
+		(With<Enemy>, Without<Player>),
+	>,
 	keys: Query<'_, '_, (&GridCoords, Entity, &EntityIid), (With<Key>, Without<Player>)>,
 	mut doors: Query<
 		'_,
@@ -469,14 +519,21 @@ fn level_spawn(
 
 	let mut enemies_map = HashMap::new();
 
-	for (grid_coords, entity, _) in &enemies {
+	for (grid_coords, entity, iid, _, drops) in &enemies {
 		enemies_map.insert(*grid_coords, entity);
+
+		if drops.0.iter().any(|drop| drop == "Key") {
+			state
+				.keys
+				.entry(ItemSource::Loot(iid.clone()))
+				.or_insert(false);
+		}
 	}
 
 	let mut keys_map = HashMap::new();
 
 	for (position, entity, iid) in &keys {
-		let taken = match state.keys.entry(iid.clone()) {
+		let taken = match state.keys.entry(ItemSource::Static(iid.clone())) {
 			Entry::Occupied(value) => *value.get(),
 			Entry::Vacant(entry) => *entry.insert(false),
 		};
@@ -484,7 +541,7 @@ fn level_spawn(
 		if taken {
 			commands.entity(entity).insert(Visibility::Hidden);
 		} else {
-			keys_map.insert(*position, (entity, iid.clone()));
+			keys_map.insert(*position, (entity, ItemSource::Static(iid.clone())));
 		}
 	}
 
@@ -541,7 +598,7 @@ fn level_spawn(
 	}
 
 	// Our Spritesheets have sprites with different sized tiles in it so we fix them.
-	if let Some((_, _, enemy)) = enemies.iter().next() {
+	if let Some((_, _, _, enemy, _)) = enemies.iter().next() {
 		if let Some(layout) = texture_atlas_layouts.get_mut(&enemy.layout) {
 			for texture in layout
 				.textures
@@ -564,7 +621,7 @@ struct State {
 	/// State of each door.
 	doors:       HashMap<EntityIid, bool>,
 	/// State of each key.
-	keys:        HashMap<EntityIid, bool>,
+	keys:        HashMap<ItemSource, bool>,
 	/// Amount of keys the player possesses.
 	player_keys: u8,
 }
@@ -665,16 +722,26 @@ fn update_cursor_pos(
 }
 
 /// Lets the player attack an enemy with a mouseclick.
-#[allow(clippy::needless_pass_by_value)]
-fn attack(
+#[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
+fn auto_attack(
 	buttons: Res<'_, ButtonInput<MouseButton>>,
+	spellbook: Query<'_, '_, (&GridCoords, &Spellbook), (With<Player>, Without<Enemy>)>,
 	target_marker: Query<'_, '_, &TargetingMarker>,
-	mut enemies: Query<'_, '_, &mut Health, With<Enemy>>,
+	mut enemies: Query<'_, '_, (&GridCoords, &mut Health), (With<Enemy>, Without<Player>)>,
 ) {
 	if buttons.just_pressed(MouseButton::Left) {
 		if let Some(entity) = target_marker.single().0 {
-			if let Ok(mut health) = enemies.get_mut(entity) {
-				health.current = health.current.saturating_sub(5);
+			if let Ok((enemy_grid_coord, mut health)) = enemies.get_mut(entity) {
+				if let Ok((player_grid_coord, spellbook)) = spellbook.get_single() {
+					let auto_attack = spellbook
+						.0
+						.get("Autoattack")
+						.expect("Player has to have an autoattack.");
+
+					if auto_attack.in_manhatten_range(*player_grid_coord, *enemy_grid_coord) {
+						health.current = health.current.saturating_sub(auto_attack.power);
+					}
+				}
 			}
 		}
 	}
@@ -741,27 +808,40 @@ fn update_healthbar(
 }
 
 /// Handle when a death event was sent.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 fn death(
 	mut commands: Commands<'_, '_>,
+	asset_server: Res<'_, AssetServer>,
 	mut deaths: EventReader<'_, '_, DeathEvent>,
 	mut animations: Query<
 		'_,
 		'_,
 		(
+			&EntityIid,
 			&GridCoords,
 			&mut Transform,
 			&mut TextureAtlas,
 			&mut Animation,
+			&mut Drops,
 			Has<Enemy>,
 			Has<Player>,
 		),
 	>,
+	layers: Query<'_, '_, (Entity, &LayerMetadata)>,
 	mut level_cache: ResMut<'_, LevelCache>,
+	state: Res<'_, State>,
 ) {
 	for event in deaths.read() {
-		let (grid_coords, mut transform, mut atlas, mut animation, enemy, player) =
-			animations.get_mut(event.0).unwrap();
+		let (
+			entity_iid,
+			grid_coords,
+			mut transform,
+			mut atlas,
+			mut animation,
+			mut drops,
+			enemy,
+			player,
+		) = animations.get_mut(event.0).unwrap();
 
 		let death_animation = if enemy {
 			EnemyBundle::death_animation()
@@ -782,6 +862,60 @@ fn death(
 			.enemies
 			.remove(grid_coords)
 			.expect("Enemy should be in level cache.");
+
+		for drop in drops.0.drain(..) {
+			match drop.as_str() {
+				"Key" => {
+					if *state
+						.keys
+						.get(&ItemSource::Loot(entity_iid.clone()))
+						.unwrap()
+					{
+						continue;
+					}
+
+					let key_texture =
+						asset_server.load::<Image>("Environment/Dungeon Prison/Assets/Props.png");
+
+					let entity = commands
+						.spawn((
+							Name::new("Key"),
+							Key,
+							*grid_coords,
+							SpriteBundle {
+								sprite: Sprite {
+									custom_size: Some(Vec2::new(16., 16.)),
+									rect: Some(Rect::new(32., 64., 48., 80.)),
+									..Sprite::default()
+								},
+								texture: key_texture,
+								..SpriteBundle::default()
+							},
+						))
+						.id();
+					commands
+						.entity(
+							layers
+								.iter()
+								.find(|(_, layer)| {
+									layer.iid == "95801fc0-25d0-11ef-8498-6b3d2275a196"
+								})
+								.unwrap()
+								.0,
+						)
+						.add_child(entity);
+
+					assert!(
+						level_cache
+							.keys
+							.insert(*grid_coords, (entity, ItemSource::Loot(entity_iid.clone())))
+							.is_none(),
+						"found key at this position already",
+					);
+				}
+				_ => unimplemented!(),
+			}
+		}
 	}
 }
 
@@ -898,6 +1032,7 @@ fn door_interactions(
 #[allow(
 	clippy::needless_pass_by_value,
 	clippy::too_many_arguments,
+	clippy::too_many_lines,
 	clippy::type_complexity
 )]
 fn movement(
@@ -909,6 +1044,7 @@ fn movement(
 		'_,
 		(
 			Entity,
+			&Spellbook,
 			&mut Transform,
 			&mut GridCoords,
 			&mut Sprite,
@@ -918,6 +1054,7 @@ fn movement(
 		),
 		With<Player>,
 	>,
+	mut enemies: Query<'_, '_, &mut Health, (With<Enemy>, Without<Player>)>,
 	level_cache: Res<'_, LevelCache>,
 	mut level_selection: ResMut<'_, LevelSelection>,
 	mut destination_entity: ResMut<'_, PlayerEntityDestination>,
@@ -947,8 +1084,16 @@ fn movement(
 		_ => return,
 	};
 
-	let (player_entity, mut transform, mut grid_pos, mut sprite, mut atlas, mut animation, finish) =
-		player.single_mut();
+	let (
+		player_entity,
+		spellbook,
+		mut transform,
+		mut grid_pos,
+		mut sprite,
+		mut atlas,
+		mut animation,
+		finish,
+	) = player.single_mut();
 	let destination = *grid_pos + direction;
 
 	match level_cache.destination(state.deref(), *grid_pos, destination) {
@@ -975,8 +1120,8 @@ fn movement(
 				.with_completed_event(0),
 			));
 
-			let arrived_event = if let Some((_, iid)) = level_cache.keys.get(&destination) {
-				*state.keys.get_mut(iid).unwrap() = true;
+			let arrived_event = if let Some((_, source)) = level_cache.keys.get(&destination) {
+				*state.keys.get_mut(source).unwrap() = true;
 				state.player_keys += 1;
 				Some(destination)
 			} else {
@@ -1009,7 +1154,20 @@ fn movement(
 				sprite.flip_x = flip;
 			}
 		}
-		Destination::Wall | Destination::Enemy => (),
+		Destination::Wall => (),
+		Destination::Enemy => {
+			let auto_attack = spellbook
+				.0
+				.get("Autoattack")
+				.expect("Player has to have an autoattack.");
+
+			if auto_attack.in_manhatten_range(*grid_pos, destination) {
+				let mut health = enemies
+					.get_mut(*level_cache.enemies.get(&destination).unwrap())
+					.unwrap();
+				health.current = health.current.saturating_sub(auto_attack.power);
+			}
+		}
 		Destination::Door(door) => {
 			if let LevelSelection::Iid(current_level) = level_selection.as_mut() {
 				*current_level = door.level;
@@ -1197,7 +1355,7 @@ fn item_ui(
 							painter.image(
 								key_texture,
 								response.rect,
-								Rect::from([
+								egui::Rect::from([
 									Pos2::new(1. / 400. * 32., 1. / 400. * 64.),
 									Pos2::new(1. / 400. * 48., 1. / 400. * 80.),
 								]),
@@ -1260,7 +1418,7 @@ fn main() {
 				movement,
 				door_interactions,
 				spawn_healthbar,
-				(attack, update_healthbar, death).chain(),
+				(auto_attack, update_healthbar, death).chain(),
 				(update_cursor_pos, update_target_marker).chain(),
 			)
 				.run_if(|debug: Res<'_, Debug>| matches!(debug.deref(), Debug::Inactive)),
