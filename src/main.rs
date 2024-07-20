@@ -3,8 +3,6 @@
 //!   - Split into multiple files.
 //!   - Replace animation code with <https://github.com/merwaaan/bevy_spritesheet_animation>.
 //! - Improve combat
-//!   - Handle attacks through events.
-//!   - Feedback when not in range.
 //! - Design turn system
 //!   - Assign order to each enemy.
 //!   - Run system after player has made their action with each enemy doing theirs.
@@ -22,10 +20,14 @@
 //! - Debuffs
 //!   - Implement bleeding debuff on enemies, think about presentation.
 //!   - Make sure its easy to integrate with abilities and add new ones.
-//! - [Bug] Sometimes levels are not despawned correctly, leading to false walls and doors being
-//!   cached.
-//! - [Bug] Fully loaded levels, before cleanup, can sometimes be seen for a single frame.
+//!
+//! Not important:
 //! - Show all levels in debug mode.
+//!
+//! Bugs:
+//! - Cursor indicator show up incorrectly when outside the level in the south or west.
+//! - Sometimes levels are not despawned correctly, leading to false walls and doors being cached.
+//! - Fully loaded levels, before cleanup, can sometimes be seen for a single frame.
 
 #![allow(clippy::multiple_crate_versions, clippy::unimplemented)]
 
@@ -33,6 +35,8 @@ use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 
+#[allow(clippy::wildcard_imports)]
+use bevy::color::palettes::basic::*;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
 use bevy::prelude::{AssetServer, *};
@@ -43,13 +47,18 @@ use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
 use bevy_ecs_tilemap::helpers::square_grid::neighbors::Neighbors;
 use bevy_ecs_tilemap::prelude::*;
+use bevy_egui::egui::{Margin, TextWrapMode};
 use bevy_egui::{egui, EguiPlugin, EguiSet};
 use bevy_inspector_egui::bevy_egui::EguiContexts;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_pancam::{MoveMode, PanCam, PanCamPlugin};
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween, TweenCompleted, TweeningPlugin};
-use egui::{Align, Align2, Color32, FontId, Frame, Layout, Pos2, Sense, SidePanel, Stroke};
+use egui::emath::Numeric;
+use egui::{
+	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
+	SidePanel, Stroke, Widget,
+};
 
 /// The size of the Grid in pixels.
 const GRID_SIZE: i32 = 16;
@@ -87,6 +96,11 @@ struct HealthBar;
 #[derive(Event)]
 struct DeathEvent(Entity);
 
+/// Event that fires when a player uses an ability. If not sent through a mouseclick we need to
+/// specifify which entity is the target.
+#[derive(Event)]
+struct AbilityEvent(Option<Entity>);
+
 /// An ability an entity can perform.
 #[derive(Reflect, Default)]
 struct Ability {
@@ -102,11 +116,20 @@ impl Ability {
 		Self { range, power }
 	}
 
-	/// Checks if ability is in range.
+	/// Checks if ability is in manhatten range.
 	fn in_manhatten_range(&self, origin: GridCoords, target: GridCoords) -> bool {
 		let distance = (target.x - origin.x).abs() + (target.y - origin.y).abs();
 
 		distance <= self.range.into()
+	}
+
+	/// Checks if ability is in euclidian range.
+	fn in_euclidean_range(&self, origin: GridCoords, target: GridCoords) -> bool {
+		let distance = ((target.x - origin.x).pow(2) + (target.y - origin.y).pow(2))
+			.to_f64()
+			.sqrt();
+
+		distance.floor() <= self.range.into()
 	}
 }
 
@@ -123,6 +146,16 @@ impl Default for Spellbook {
 	}
 }
 
+/// The currently active ability of an entity.
+#[derive(Reflect, Component)]
+struct ActiveAbility(String);
+
+impl Default for ActiveAbility {
+	fn default() -> Self {
+		Self(String::from("Autoattack"))
+	}
+}
+
 /// Player marker component.
 #[derive(Default, Component)]
 struct Player;
@@ -136,7 +169,9 @@ struct PlayerBundle {
 	#[from_entity_instance]
 	health:              Health,
 	/// Abilities the player can perform.
-	attacks:             Spellbook,
+	abilities:           Spellbook,
+	/// The currently active ability.
+	active_ability:      ActiveAbility,
 	/// Sprite bundle.
 	#[sprite_sheet_bundle]
 	sprite_sheet_bundle: LdtkSpriteSheetBundle,
@@ -155,7 +190,8 @@ impl Default for PlayerBundle {
 		Self {
 			player:              Player,
 			health:              Health::default(),
-			attacks:             Spellbook::default(),
+			abilities:           Spellbook::default(),
+			active_ability:      ActiveAbility::default(),
 			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
 			animation:           Self::idle_animation(),
@@ -618,6 +654,8 @@ fn level_spawn(
 #[derive(Default, Reflect, Resource)]
 #[reflect(Resource)]
 struct State {
+	/// The current turn.
+	turn:        u64,
 	/// State of each door.
 	doors:       HashMap<EntityIid, bool>,
 	/// State of each key.
@@ -721,29 +759,52 @@ fn update_cursor_pos(
 	}
 }
 
-/// Lets the player attack an enemy with a mouseclick.
+/// Handles when a player wants to cast an ability.
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
-fn auto_attack(
-	buttons: Res<'_, ButtonInput<MouseButton>>,
-	spellbook: Query<'_, '_, (&GridCoords, &Spellbook), (With<Player>, Without<Enemy>)>,
+fn handle_ability_event(
+	mut state: ResMut<'_, State>,
+	player: Query<
+		'_,
+		'_,
+		(&ActiveAbility, &GridCoords, &Spellbook),
+		(With<Player>, Without<Enemy>),
+	>,
 	target_marker: Query<'_, '_, &TargetingMarker>,
 	mut enemies: Query<'_, '_, (&GridCoords, &mut Health), (With<Enemy>, Without<Player>)>,
+	mut abilities: EventReader<'_, '_, AbilityEvent>,
 ) {
-	if buttons.just_pressed(MouseButton::Left) {
-		if let Some(entity) = target_marker.single().0 {
-			if let Ok((enemy_grid_coord, mut health)) = enemies.get_mut(entity) {
-				if let Ok((player_grid_coord, spellbook)) = spellbook.get_single() {
-					let auto_attack = spellbook
-						.0
-						.get("Autoattack")
-						.expect("Player has to have an autoattack.");
+	let target_marker = target_marker.single();
 
-					if auto_attack.in_manhatten_range(*player_grid_coord, *enemy_grid_coord) {
-						health.current = health.current.saturating_sub(auto_attack.power);
-					}
+	for ability in abilities.read() {
+		let Some(entity) = ability.0.or(target_marker.0) else {
+			continue;
+		};
+
+		if let Ok((enemy_grid_coord, mut health)) = enemies.get_mut(entity) {
+			if let Ok((active_ability, player_grid_coord, spellbook)) = player.get_single() {
+				let attack = spellbook
+					.0
+					.get(&active_ability.0)
+					.expect("Player has to have an active ability.");
+
+				if attack.in_euclidean_range(*player_grid_coord, *enemy_grid_coord) {
+					state.turn += 1;
+
+					health.current = health.current.saturating_sub(attack.power);
 				}
 			}
 		}
+	}
+}
+
+/// Lets player cast an ability with a mouseclick.
+#[allow(clippy::needless_pass_by_value)]
+fn cast_ability(
+	buttons: Res<'_, ButtonInput<MouseButton>>,
+	mut abilities: EventWriter<'_, AbilityEvent>,
+) {
+	if buttons.just_pressed(MouseButton::Left) {
+		abilities.send(AbilityEvent(None));
 	}
 }
 
@@ -760,7 +821,7 @@ fn spawn_healthbar(
 			entity.spawn((
 				MaterialMesh2dBundle {
 					mesh: meshes.add(Rectangle::new(32., 5.)).into(),
-					material: materials.add(Color::from(Srgba::RED)),
+					material: materials.add(Color::from(RED)),
 					transform: Transform::from_translation(Vec3::new(0., 20., 0.1)),
 					visibility: if is_enemy.is_some() {
 						Visibility::Hidden
@@ -923,6 +984,7 @@ fn death(
 #[allow(clippy::needless_pass_by_value)]
 fn update_target_marker(
 	cursor_pos: Res<'_, CursorPos>,
+	player: Query<'_, '_, (&GridCoords, &Spellbook, &ActiveAbility), With<Player>>,
 	mut target_marker: Query<
 		'_,
 		'_,
@@ -932,10 +994,14 @@ fn update_target_marker(
 			&mut GridCoords,
 			&mut Sprite,
 		),
+		Without<Player>,
 	>,
 	level_cache: Res<'_, LevelCache>,
 ) {
 	let (mut marker, mut visibility, mut grid_coords, mut sprite) = target_marker.single_mut();
+	let Ok((player_grid_coords, spellbook, active_ability)) = player.get_single() else {
+		return;
+	};
 
 	if level_cache.outside_boundary(cursor_pos.tile_pos) {
 		*visibility = Visibility::Hidden;
@@ -945,7 +1011,17 @@ fn update_target_marker(
 		grid_coords.set_if_neq(cursor_pos.tile_pos);
 
 		if let Some(entity) = level_cache.enemies.get(grid_coords.deref()) {
-			sprite.color = Srgba::RED.into();
+			let ability = spellbook
+				.0
+				.get(&active_ability.0)
+				.expect("Player has to have an active ability.");
+
+			if ability.in_euclidean_range(*player_grid_coords, *grid_coords) {
+				sprite.color = RED.into();
+			} else {
+				sprite.color = YELLOW.into();
+			}
+
 			marker.set_if_neq(TargetingMarker(Some(*entity)));
 		} else {
 			sprite.color = Color::WHITE;
@@ -1003,25 +1079,21 @@ fn door_interactions(
 		{
 			if let Some((entity, iid, door)) = level_cache.doors.get(&GridCoords::from(*tile_pos)) {
 				let State {
-					doors, player_keys, ..
+					turn,
+					doors,
+					player_keys,
+					..
 				} = state.deref_mut();
 
 				let open = doors.get_mut(iid).unwrap();
 
 				if !*open && *player_keys > 0 {
+					*turn += 1;
+
 					*open = true;
 					*player_keys -= 1;
-					#[allow(clippy::shadow_same)]
-					let open = *open;
-					*state.doors.get_mut(&door.entity).unwrap() = open;
-
-					let mut atlas = doors_query.get_mut(*entity).unwrap();
-
-					if open {
-						atlas.index = 133;
-					} else {
-						atlas.index = 108;
-					}
+					*state.doors.get_mut(&door.entity).unwrap() = true;
+					doors_query.get_mut(*entity).unwrap().index = 133;
 				}
 			}
 		}
@@ -1032,19 +1104,18 @@ fn door_interactions(
 #[allow(
 	clippy::needless_pass_by_value,
 	clippy::too_many_arguments,
-	clippy::too_many_lines,
 	clippy::type_complexity
 )]
 fn movement(
 	mut state: ResMut<'_, State>,
 	mut commands: Commands<'_, '_>,
 	mut input: EventReader<'_, '_, KeyboardInput>,
+	mut cast_ability: EventWriter<'_, AbilityEvent>,
 	mut player: Query<
 		'_,
 		'_,
 		(
 			Entity,
-			&Spellbook,
 			&mut Transform,
 			&mut GridCoords,
 			&mut Sprite,
@@ -1054,7 +1125,6 @@ fn movement(
 		),
 		With<Player>,
 	>,
-	mut enemies: Query<'_, '_, &mut Health, (With<Enemy>, Without<Player>)>,
 	level_cache: Res<'_, LevelCache>,
 	mut level_selection: ResMut<'_, LevelSelection>,
 	mut destination_entity: ResMut<'_, PlayerEntityDestination>,
@@ -1084,20 +1154,14 @@ fn movement(
 		_ => return,
 	};
 
-	let (
-		player_entity,
-		spellbook,
-		mut transform,
-		mut grid_pos,
-		mut sprite,
-		mut atlas,
-		mut animation,
-		finish,
-	) = player.single_mut();
+	let (player_entity, mut transform, mut grid_pos, mut sprite, mut atlas, mut animation, finish) =
+		player.single_mut();
 	let destination = *grid_pos + direction;
 
 	match level_cache.destination(state.deref(), *grid_pos, destination) {
 		Destination::Walkable => {
+			state.turn += 1;
+
 			// Interrupts the animation.
 			transform.translation =
 				utils::grid_coords_to_translation(*grid_pos, IVec2::splat(GRID_SIZE))
@@ -1156,17 +1220,9 @@ fn movement(
 		}
 		Destination::Wall => (),
 		Destination::Enemy => {
-			let auto_attack = spellbook
-				.0
-				.get("Autoattack")
-				.expect("Player has to have an autoattack.");
-
-			if auto_attack.in_manhatten_range(*grid_pos, destination) {
-				let mut health = enemies
-					.get_mut(*level_cache.enemies.get(&destination).unwrap())
-					.unwrap();
-				health.current = health.current.saturating_sub(auto_attack.power);
-			}
+			cast_ability.send(AbilityEvent(Some(
+				*level_cache.enemies.get(&destination).unwrap(),
+			)));
 		}
 		Destination::Door(door) => {
 			if let LevelSelection::Iid(current_level) = level_selection.as_mut() {
@@ -1394,6 +1450,34 @@ fn item_ui(
 		});
 }
 
+/// Item UI.
+#[allow(clippy::needless_pass_by_value)]
+fn turn_ui(state: Res<'_, State>, mut contexts: EguiContexts<'_, '_>) {
+	let Some(context) = contexts.try_ctx_mut() else {
+		return;
+	};
+
+	Area::new(Id::new("turn"))
+		.fixed_pos(Pos2::new(0., 0.))
+		.show(context, |ui| {
+			Frame::default()
+				.fill(Color32::BLACK)
+				.stroke(Stroke::new(2., Color32::WHITE))
+				.rounding(5.)
+				.inner_margin(Margin::symmetric(6., 4.))
+				.show(ui, |ui| {
+					Label::new(
+						RichText::new(format!("Turn: {}", state.turn))
+							.color(Color32::WHITE)
+							.size(24.),
+					)
+					.selectable(false)
+					.wrap_mode(TextWrapMode::Extend)
+					.ui(ui)
+				});
+		});
+}
+
 fn main() {
 	App::new()
 		.add_plugins((
@@ -1418,7 +1502,8 @@ fn main() {
 				movement,
 				door_interactions,
 				spawn_healthbar,
-				(auto_attack, update_healthbar, death).chain(),
+				cast_ability,
+				(handle_ability_event, update_healthbar, death).chain(),
 				(update_cursor_pos, update_target_marker).chain(),
 			)
 				.run_if(|debug: Res<'_, Debug>| matches!(debug.deref(), Debug::Inactive)),
@@ -1426,7 +1511,7 @@ fn main() {
 		.add_systems(
 			PostUpdate,
 			(
-				item_ui.before(EguiSet::ProcessOutput),
+				(turn_ui, item_ui).before(EguiSet::ProcessOutput),
 				animate,
 				(
 					finish_animation,
@@ -1451,6 +1536,7 @@ fn main() {
 		.init_resource::<PlayerEntityDestination>()
 		.add_event::<AnimationArrived>()
 		.add_event::<DeathEvent>()
+		.add_event::<AbilityEvent>()
 		.register_ldtk_entity::<PlayerBundle>("Player")
 		.register_ldtk_entity::<KeyBundle>("Key")
 		.register_ldtk_entity::<EnemyBundle>("Skeleton")
