@@ -2,6 +2,7 @@
 //! - Refactor Code
 //!   - Split into multiple files.
 //!   - Replace animation code with <https://github.com/merwaaan/bevy_spritesheet_animation>.
+//!   - Replace egui with <https://github.com/UmbraLuminosa/sickle_ui> maybe?
 //! - Improve combat
 //! - Design turn system
 //!   - Assign order to each enemy.
@@ -14,7 +15,6 @@
 //!   - When player goes out of LoS enemies go to last known position and "wait" before returning to
 //!     their spawn point.
 //! - Abilities
-//!   - Show abilities to player.
 //!   - Implement tooltip.
 //!   - Make sure its easy to add new abilities.
 //! - Debuffs
@@ -31,6 +31,7 @@
 
 #![allow(clippy::multiple_crate_versions, clippy::unimplemented)]
 
+use std::collections::BTreeMap;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::time::Duration;
@@ -47,13 +48,13 @@ use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
 use bevy_ecs_tilemap::helpers::square_grid::neighbors::Neighbors;
 use bevy_ecs_tilemap::prelude::*;
-use bevy_egui::egui::{Margin, TextWrapMode};
+use bevy_egui::egui::{Margin, TextWrapMode, TopBottomPanel};
 use bevy_egui::{egui, EguiPlugin, EguiSet};
 use bevy_inspector_egui::bevy_egui::EguiContexts;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_pancam::{MoveMode, PanCam, PanCamPlugin};
 use bevy_tweening::lens::TransformPositionLens;
-use bevy_tweening::{Animator, EaseMethod, Tween, TweenCompleted, TweeningPlugin};
+use bevy_tweening::{Animator, EaseFunction, EaseMethod, Tween, TweenCompleted, TweeningPlugin};
 use egui::emath::Numeric;
 use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
@@ -105,15 +106,24 @@ struct AbilityEvent(Option<Entity>);
 #[derive(Reflect, Default)]
 struct Ability {
 	/// The range in manhatten distance of the ability.
-	range: u8,
+	range:     u8,
 	/// The power of the ability.
-	power: u16,
+	power:     u16,
+	/// The Cooldown of the ability.
+	cooldown:  Option<u8>,
+	/// When this ability was last cast.
+	last_cast: Option<u64>,
 }
 
 impl Ability {
 	/// Creates an ability.
-	const fn new(range: u8, power: u16) -> Self {
-		Self { range, power }
+	const fn new(range: u8, power: u16, cooldown: Option<u8>) -> Self {
+		Self {
+			range,
+			power,
+			cooldown,
+			last_cast: None,
+		}
 	}
 
 	/// Checks if ability is in manhatten range.
@@ -131,18 +141,33 @@ impl Ability {
 
 		distance.floor() <= self.range.into()
 	}
+
+	/// Calculates how much cooldown is left for this ability.
+	fn cooldown_left(&self, current_turn: u64) -> Option<u64> {
+		self.last_cast.and_then(|last_cast| {
+			let cooldown_left = (last_cast
+				+ u64::from(
+					self.cooldown
+						.expect("when ability has last cast it also needs to have a cooldown"),
+				))
+			.saturating_sub(current_turn);
+
+			(cooldown_left > 0).then_some(cooldown_left)
+		})
+	}
 }
 
 /// The collection of abilities an entity can perform.
 #[derive(Reflect, Component)]
-struct Spellbook(HashMap<String, Ability>);
+struct Spellbook(BTreeMap<String, Ability>);
 
 impl Default for Spellbook {
 	fn default() -> Self {
-		Self(HashMap::from([(
-			String::from("Autoattack"),
-			Ability::new(1, 5),
-		)]))
+		Self(BTreeMap::from([
+			(String::from("Autoattack"), Ability::new(1, 5, None)),
+			(String::from("Ranged"), Ability::new(5, 2, None)),
+			(String::from("Hardcore"), Ability::new(1, 10, Some(3))),
+		]))
 	}
 }
 
@@ -762,15 +787,22 @@ fn update_cursor_pos(
 /// Handles when a player wants to cast an ability.
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 fn handle_ability_event(
+	mut commands: Commands<'_, '_>,
 	mut state: ResMut<'_, State>,
-	player: Query<
+	mut player: Query<
 		'_,
 		'_,
-		(&ActiveAbility, &GridCoords, &Spellbook),
+		(
+			Entity,
+			&Transform,
+			&ActiveAbility,
+			&GridCoords,
+			&mut Spellbook,
+		),
 		(With<Player>, Without<Enemy>),
 	>,
 	target_marker: Query<'_, '_, &TargetingMarker>,
-	mut enemies: Query<'_, '_, (&GridCoords, &mut Health), (With<Enemy>, Without<Player>)>,
+	mut enemies: Query<'_, '_, (&Transform, &GridCoords, &mut Health), (With<Enemy>, Without<Player>)>,
 	mut abilities: EventReader<'_, '_, AbilityEvent>,
 ) {
 	let target_marker = target_marker.single();
@@ -780,17 +812,48 @@ fn handle_ability_event(
 			continue;
 		};
 
-		if let Ok((enemy_grid_coord, mut health)) = enemies.get_mut(entity) {
-			if let Ok((active_ability, player_grid_coord, spellbook)) = player.get_single() {
+		if let Ok((enemy_transform, enemy_grid_coord, mut health)) = enemies.get_mut(entity) {
+			if let Ok((
+				player_entity,
+				player_transform,
+				active_ability,
+				player_grid_coord,
+				mut spellbook,
+			)) = player.get_single_mut()
+			{
 				let attack = spellbook
 					.0
-					.get(&active_ability.0)
+					.get_mut(&active_ability.0)
 					.expect("Player has to have an active ability.");
 
-				if attack.in_euclidean_range(*player_grid_coord, *enemy_grid_coord) {
+				if attack.last_cast.is_none()
+					&& attack.in_euclidean_range(*player_grid_coord, *enemy_grid_coord)
+				{
 					state.turn += 1;
-
 					health.current = health.current.saturating_sub(attack.power);
+					let target = player_transform.translation + (enemy_transform.translation - player_transform.translation).normalize();
+
+					commands
+						.entity(player_entity)
+						.insert(Animator::new(Tween::new(
+							EaseMethod::Linear,
+							Duration::from_secs_f64(0.2),
+							TransformPositionLens {
+								start: player_transform.translation,
+								end:   target,
+							},
+						).then(Tween::new(
+							EaseMethod::Linear,
+							Duration::from_secs_f64(0.2),
+							TransformPositionLens {
+								start: target,
+								end:   player_transform.translation,
+							},
+						))));
+
+					if attack.cooldown.is_some() {
+						attack.last_cast = Some(state.turn);
+					}
 				}
 			}
 		}
@@ -862,6 +925,20 @@ fn update_healthbar(
 					} else {
 						visibility.set_if_neq(Visibility::Hidden);
 					}
+				}
+			}
+		}
+	}
+}
+
+/// Ticks abilities currently on cooldown.
+#[allow(clippy::needless_pass_by_value)]
+fn tick_cooldowns(state: ResMut<'_, State>, mut spellbooks: Query<'_, '_, &mut Spellbook>) {
+	if state.is_changed() {
+		for mut spellbook in &mut spellbooks {
+			for ability in spellbook.0.values_mut() {
+				if ability.cooldown_left(state.turn).is_none() {
+					ability.last_cast = None;
 				}
 			}
 		}
@@ -1450,7 +1527,7 @@ fn item_ui(
 		});
 }
 
-/// Item UI.
+/// Turn counter UI.
 #[allow(clippy::needless_pass_by_value)]
 fn turn_ui(state: Res<'_, State>, mut contexts: EguiContexts<'_, '_>) {
 	let Some(context) = contexts.try_ctx_mut() else {
@@ -1478,6 +1555,110 @@ fn turn_ui(state: Res<'_, State>, mut contexts: EguiContexts<'_, '_>) {
 		});
 }
 
+/// Abilities UI.
+#[allow(clippy::needless_pass_by_value)]
+fn ability_ui(
+	player: Query<'_, '_, (&Spellbook, &ActiveAbility), With<Player>>,
+	mut contexts: EguiContexts<'_, '_>,
+	state: Res<'_, State>,
+) {
+	let Ok((spellbook, active_ability)) = player.get_single() else {
+		return;
+	};
+
+	let Some(context) = contexts.try_ctx_mut() else {
+		return;
+	};
+
+	TopBottomPanel::bottom("abilities").show(context, |ui| {
+		ui.horizontal(|ui| {
+			for ((name, ability), button) in spellbook.0.iter().zip(1..) {
+				let mut text = format!("{button}. {name}");
+				let mut color = None;
+
+				if let Some(cooldown_left) = ability.cooldown_left(state.turn) {
+					text = format!("{text} ({cooldown_left})");
+					color = Some(Color32::RED);
+				}
+
+				if *name == active_ability.0 {
+					ui.label(RichText::new(text).color(color.unwrap_or(Color32::GREEN)));
+				} else {
+					ui.label(RichText::new(text).color(color.unwrap_or(Color32::YELLOW)));
+				}
+			}
+		});
+	});
+}
+
+/// Selects ability when pressing number keys.
+fn select_ability(
+	mut input: EventReader<'_, '_, KeyboardInput>,
+	mut player: Query<'_, '_, (&Spellbook, &mut ActiveAbility), With<Player>>,
+) {
+	let Ok((spellbook, mut active_ability)) = player.get_single_mut() else {
+		return;
+	};
+
+	for ev in input.read() {
+		let mut spellbook_iter = spellbook.0.iter();
+
+		if let ButtonState::Pressed = ev.state {
+			match ev.key_code {
+				KeyCode::Digit1 => {
+					active_ability.0.clone_from(
+						spellbook_iter
+							.next()
+							.expect("first slot always needs to have autoattack")
+							.0,
+					);
+				}
+				KeyCode::Digit2 => {
+					if let Some(name) = spellbook_iter.nth(1) {
+						active_ability.0.clone_from(name.0);
+					}
+				}
+				KeyCode::Digit3 => {
+					if let Some(name) = spellbook_iter.nth(2) {
+						active_ability.0.clone_from(name.0);
+					}
+				}
+				KeyCode::Digit4 => {
+					if let Some(name) = spellbook_iter.nth(3) {
+						active_ability.0.clone_from(name.0);
+					}
+				}
+				KeyCode::Digit5 => {
+					if let Some(name) = spellbook_iter.nth(4) {
+						active_ability.0.clone_from(name.0);
+					}
+				}
+				KeyCode::Digit6 => {
+					if let Some(name) = spellbook_iter.nth(5) {
+						active_ability.0.clone_from(name.0);
+					}
+				}
+				KeyCode::Digit7 => {
+					if let Some(name) = spellbook_iter.nth(6) {
+						active_ability.0.clone_from(name.0);
+					}
+				}
+				KeyCode::Digit8 => {
+					if let Some(name) = spellbook_iter.nth(7) {
+						active_ability.0.clone_from(name.0);
+					}
+				}
+				KeyCode::Digit9 => {
+					if let Some(name) = spellbook_iter.nth(8) {
+						active_ability.0.clone_from(name.0);
+					}
+				}
+				_ => {}
+			}
+		}
+	}
+}
+
 fn main() {
 	App::new()
 		.add_plugins((
@@ -1500,6 +1681,7 @@ fn main() {
 			Update,
 			(
 				movement,
+				select_ability,
 				door_interactions,
 				spawn_healthbar,
 				cast_ability,
@@ -1511,7 +1693,8 @@ fn main() {
 		.add_systems(
 			PostUpdate,
 			(
-				(turn_ui, item_ui).before(EguiSet::ProcessOutput),
+				tick_cooldowns,
+				(turn_ui, item_ui, ability_ui).before(EguiSet::ProcessOutput),
 				animate,
 				(
 					finish_animation,
@@ -1547,5 +1730,6 @@ fn main() {
 		.register_type::<Health>()
 		.register_type::<LevelCache>()
 		.register_type::<State>()
+		.register_type::<Spellbook>()
 		.run();
 }
