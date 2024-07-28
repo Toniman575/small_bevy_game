@@ -54,7 +54,9 @@ use bevy_inspector_egui::bevy_egui::EguiContexts;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_pancam::{MoveMode, PanCam, PanCamPlugin};
 use bevy_tweening::lens::TransformPositionLens;
-use bevy_tweening::{Animator, EaseFunction, EaseMethod, Tween, TweenCompleted, TweeningPlugin};
+use bevy_tweening::{
+	Animator, EaseFunction, EaseMethod, Sequence, Tween, TweenCompleted, Tweenable, TweeningPlugin,
+};
 use egui::emath::Numeric;
 use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
@@ -105,6 +107,10 @@ struct AbilityEvent(Option<Entity>);
 /// An ability an entity can perform.
 #[derive(Reflect, Default)]
 struct Ability {
+	/// Identifier for the ability.
+	id:        u64,
+	/// Name of the ability.
+	name:      String,
 	/// The range in manhatten distance of the ability.
 	range:     u8,
 	/// The power of the ability.
@@ -117,8 +123,10 @@ struct Ability {
 
 impl Ability {
 	/// Creates an ability.
-	const fn new(range: u8, power: u16, cooldown: Option<u8>) -> Self {
+	const fn new(id: u64, name: String, range: u8, power: u16, cooldown: Option<u8>) -> Self {
 		Self {
+			id,
+			name,
 			range,
 			power,
 			cooldown,
@@ -155,31 +163,27 @@ impl Ability {
 			(cooldown_left > 0).then_some(cooldown_left)
 		})
 	}
+
+	//fn get_animation(&self) -> impl Tweenable<TransformPositionLens> {}
 }
 
 /// The collection of abilities an entity can perform.
 #[derive(Reflect, Component)]
-struct Spellbook(BTreeMap<String, Ability>);
+struct Spellbook(BTreeMap<u64, Ability>);
 
 impl Default for Spellbook {
 	fn default() -> Self {
 		Self(BTreeMap::from([
-			(String::from("Autoattack"), Ability::new(1, 5, None)),
-			(String::from("Ranged"), Ability::new(5, 2, None)),
-			(String::from("Hardcore"), Ability::new(1, 10, Some(3))),
+			(0, Ability::new(0, String::from("Autoattack"), 1, 5, None)),
+			(1, Ability::new(1, String::from("Ranged"), 5, 2, None)),
+			(2, Ability::new(2, String::from("Hardcore"), 1, 10, Some(3))),
 		]))
 	}
 }
 
 /// The currently active ability of an entity.
-#[derive(Reflect, Component)]
-struct ActiveAbility(String);
-
-impl Default for ActiveAbility {
-	fn default() -> Self {
-		Self(String::from("Autoattack"))
-	}
-}
+#[derive(Reflect, Component, Default)]
+struct ActiveAbility(u64);
 
 /// Player marker component.
 #[derive(Default, Component)]
@@ -802,7 +806,12 @@ fn handle_ability_event(
 		(With<Player>, Without<Enemy>),
 	>,
 	target_marker: Query<'_, '_, &TargetingMarker>,
-	mut enemies: Query<'_, '_, (&Transform, &GridCoords, &mut Health), (With<Enemy>, Without<Player>)>,
+	mut enemies: Query<
+		'_,
+		'_,
+		(&Transform, &GridCoords, &mut Health),
+		(With<Enemy>, Without<Player>),
+	>,
 	mut abilities: EventReader<'_, '_, AbilityEvent>,
 ) {
 	let target_marker = target_marker.single();
@@ -831,25 +840,29 @@ fn handle_ability_event(
 				{
 					state.turn += 1;
 					health.current = health.current.saturating_sub(attack.power);
-					let target = player_transform.translation + (enemy_transform.translation - player_transform.translation).normalize();
+					let target = player_transform.translation
+						+ (enemy_transform.translation.xy() - player_transform.translation.xy())
+							.normalize()
+							.extend(player_transform.translation.z);
 
-					commands
-						.entity(player_entity)
-						.insert(Animator::new(Tween::new(
+					commands.entity(player_entity).insert(Animator::new(
+						Tween::new(
 							EaseMethod::Linear,
 							Duration::from_secs_f64(0.2),
 							TransformPositionLens {
 								start: player_transform.translation,
 								end:   target,
 							},
-						).then(Tween::new(
+						)
+						.then(Tween::new(
 							EaseMethod::Linear,
 							Duration::from_secs_f64(0.2),
 							TransformPositionLens {
 								start: target,
 								end:   player_transform.translation,
 							},
-						))));
+						)),
+					));
 
 					if attack.cooldown.is_some() {
 						attack.last_cast = Some(state.turn);
@@ -1572,8 +1585,8 @@ fn ability_ui(
 
 	TopBottomPanel::bottom("abilities").show(context, |ui| {
 		ui.horizontal(|ui| {
-			for ((name, ability), button) in spellbook.0.iter().zip(1..) {
-				let mut text = format!("{button}. {name}");
+			for ((_, ability), button) in spellbook.0.iter().zip(1..) {
+				let mut text = format!("{}. {}", button, ability.name);
 				let mut color = None;
 
 				if let Some(cooldown_left) = ability.cooldown_left(state.turn) {
@@ -1581,7 +1594,7 @@ fn ability_ui(
 					color = Some(Color32::RED);
 				}
 
-				if *name == active_ability.0 {
+				if ability.id == active_ability.0 {
 					ui.label(RichText::new(text).color(color.unwrap_or(Color32::GREEN)));
 				} else {
 					ui.label(RichText::new(text).color(color.unwrap_or(Color32::YELLOW)));
