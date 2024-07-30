@@ -54,9 +54,7 @@ use bevy_inspector_egui::bevy_egui::EguiContexts;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_pancam::{MoveMode, PanCam, PanCamPlugin};
 use bevy_tweening::lens::TransformPositionLens;
-use bevy_tweening::{
-	Animator, EaseFunction, EaseMethod, Sequence, Tween, TweenCompleted, Tweenable, TweeningPlugin,
-};
+use bevy_tweening::{Animator, EaseMethod, Tween, TweenCompleted, TweeningPlugin};
 use egui::emath::Numeric;
 use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
@@ -65,6 +63,16 @@ use egui::{
 
 /// The size of the Grid in pixels.
 const GRID_SIZE: i32 = 16;
+
+/// State for controlling if the game currently can start a new animation or not
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, States)]
+enum AnimationState {
+	/// Waiting for player to start an animation
+	#[default]
+	Waiting,
+	/// Waiting for an animation to finish
+	Running,
+}
 
 /// Component for tracking health in entities.
 #[derive(Clone, Component, Debug, Default, Reflect, PartialEq, Eq, Copy)]
@@ -450,7 +458,7 @@ impl LevelCache {
 	/// Checks if [`GridCoords`] is a wall or outside of the Level.
 	fn destination(
 		&self,
-		state: &State,
+		state: &GameState,
 		source: GridCoords,
 		destination: GridCoords,
 	) -> Destination {
@@ -544,7 +552,7 @@ fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
 )]
 fn level_spawn(
 	mut commands: Commands<'_, '_>,
-	mut state: ResMut<'_, State>,
+	mut state: ResMut<'_, GameState>,
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut level_events: EventReader<'_, '_, LevelEvent>,
 	mut texture_atlas_layouts: ResMut<'_, Assets<TextureAtlasLayout>>,
@@ -565,10 +573,9 @@ fn level_spawn(
 	mut player_entity_destination: ResMut<'_, PlayerEntityDestination>,
 	ldtk_entities: Query<'_, '_, (Entity, &EntityIid), Without<Player>>,
 	entity_grid_coords: Query<'_, '_, &GridCoords, Without<Player>>,
-	mut player: Query<'_, '_, (Entity, &mut GridCoords), With<Player>>,
+	mut player: Query<'_, '_, &mut GridCoords, With<Player>>,
 	ldtk_project_entities: Query<'_, '_, &Handle<LdtkProject>>,
 	ldtk_project_assets: Res<'_, Assets<LdtkProject>>,
-	mut complete_animation: EventWriter<'_, TweenCompleted>,
 ) {
 	let Some(LevelEvent::Spawned(level_iid)) = level_events.read().next() else {
 		return;
@@ -649,15 +656,8 @@ fn level_spawn(
 		let destination_grid_coords = entity_grid_coords
 			.get(destination_entity)
 			.expect("destination entity should exist");
-		let (player_entity, mut player_grid_coords) = player.single_mut();
+		let mut player_grid_coords = player.single_mut();
 		*player_grid_coords = *destination_grid_coords;
-
-		// We need to remove the Animation in case there was still one running during a level
-		// change.
-		complete_animation.send(TweenCompleted {
-			entity:    player_entity,
-			user_data: 0,
-		});
 
 		player_entity_destination.0 = None;
 	}
@@ -682,7 +682,7 @@ fn level_spawn(
 /// Game state.
 #[derive(Default, Reflect, Resource)]
 #[reflect(Resource)]
-struct State {
+struct GameState {
 	/// The current turn.
 	turn:        u64,
 	/// State of each door.
@@ -792,7 +792,7 @@ fn update_cursor_pos(
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 fn handle_ability_event(
 	mut commands: Commands<'_, '_>,
-	mut state: ResMut<'_, State>,
+	mut state: ResMut<'_, GameState>,
 	mut player: Query<
 		'_,
 		'_,
@@ -813,6 +813,7 @@ fn handle_ability_event(
 		(With<Enemy>, Without<Player>),
 	>,
 	mut abilities: EventReader<'_, '_, AbilityEvent>,
+	mut animation_state: ResMut<'_, NextState<AnimationState>>,
 ) {
 	let target_marker = target_marker.single();
 
@@ -838,6 +839,7 @@ fn handle_ability_event(
 				if attack.last_cast.is_none()
 					&& attack.in_euclidean_range(*player_grid_coord, *enemy_grid_coord)
 				{
+					animation_state.set(AnimationState::Running);
 					state.turn += 1;
 					health.current = health.current.saturating_sub(attack.power);
 					let target = player_transform.translation
@@ -848,20 +850,23 @@ fn handle_ability_event(
 					commands.entity(player_entity).insert(Animator::new(
 						Tween::new(
 							EaseMethod::Linear,
-							Duration::from_secs_f64(0.2),
+							Duration::from_secs_f64(0.1),
 							TransformPositionLens {
 								start: player_transform.translation,
 								end:   target,
 							},
 						)
-						.then(Tween::new(
-							EaseMethod::Linear,
-							Duration::from_secs_f64(0.2),
-							TransformPositionLens {
-								start: target,
-								end:   player_transform.translation,
-							},
-						)),
+						.then(
+							Tween::new(
+								EaseMethod::Linear,
+								Duration::from_secs_f64(0.1),
+								TransformPositionLens {
+									start: target,
+									end:   player_transform.translation,
+								},
+							)
+							.with_completed_event(0),
+						),
 					));
 
 					if attack.cooldown.is_some() {
@@ -946,7 +951,7 @@ fn update_healthbar(
 
 /// Ticks abilities currently on cooldown.
 #[allow(clippy::needless_pass_by_value)]
-fn tick_cooldowns(state: ResMut<'_, State>, mut spellbooks: Query<'_, '_, &mut Spellbook>) {
+fn tick_cooldowns(state: ResMut<'_, GameState>, mut spellbooks: Query<'_, '_, &mut Spellbook>) {
 	if state.is_changed() {
 		for mut spellbook in &mut spellbooks {
 			for ability in spellbook.0.values_mut() {
@@ -980,7 +985,7 @@ fn death(
 	>,
 	layers: Query<'_, '_, (Entity, &LayerMetadata)>,
 	mut level_cache: ResMut<'_, LevelCache>,
-	state: Res<'_, State>,
+	state: Res<'_, GameState>,
 ) {
 	for event in deaths.read() {
 		let (
@@ -1137,7 +1142,7 @@ fn camera_update(
 /// Opens and closes doors.
 #[allow(clippy::needless_pass_by_value)]
 fn door_interactions(
-	mut state: ResMut<'_, State>,
+	mut state: ResMut<'_, GameState>,
 	level_cache: Res<'_, LevelCache>,
 	mut doors_query: Query<'_, '_, &mut TextureAtlas, With<Door>>,
 	tile_map_size: Query<'_, '_, &TilemapSize>,
@@ -1168,7 +1173,7 @@ fn door_interactions(
 		.iter()
 		{
 			if let Some((entity, iid, door)) = level_cache.doors.get(&GridCoords::from(*tile_pos)) {
-				let State {
+				let GameState {
 					turn,
 					doors,
 					player_keys,
@@ -1197,7 +1202,7 @@ fn door_interactions(
 	clippy::type_complexity
 )]
 fn movement(
-	mut state: ResMut<'_, State>,
+	mut state: ResMut<'_, GameState>,
 	mut commands: Commands<'_, '_>,
 	mut input: EventReader<'_, '_, KeyboardInput>,
 	mut cast_ability: EventWriter<'_, AbilityEvent>,
@@ -1206,19 +1211,18 @@ fn movement(
 		'_,
 		(
 			Entity,
-			&mut Transform,
+			&Transform,
 			&mut GridCoords,
 			&mut Sprite,
 			&mut TextureAtlas,
 			&mut Animation,
-			Option<&mut AnimationFinish>,
 		),
 		With<Player>,
 	>,
 	level_cache: Res<'_, LevelCache>,
 	mut level_selection: ResMut<'_, LevelSelection>,
 	mut destination_entity: ResMut<'_, PlayerEntityDestination>,
-	mut arrived: EventWriter<'_, AnimationArrived>,
+	mut animation_state: ResMut<'_, NextState<AnimationState>>,
 ) {
 	let Some(input) = input.read().next() else {
 		return;
@@ -1244,18 +1248,14 @@ fn movement(
 		_ => return,
 	};
 
-	let (player_entity, mut transform, mut grid_pos, mut sprite, mut atlas, mut animation, finish) =
+	let (player_entity, transform, mut grid_pos, mut sprite, mut atlas, mut animation) =
 		player.single_mut();
 	let destination = *grid_pos + direction;
 
 	match level_cache.destination(state.deref(), *grid_pos, destination) {
 		Destination::Walkable => {
 			state.turn += 1;
-
-			// Interrupts the animation.
-			transform.translation =
-				utils::grid_coords_to_translation(*grid_pos, IVec2::splat(GRID_SIZE))
-					.extend(transform.translation.z);
+			animation_state.set(AnimationState::Running);
 
 			let mut player = commands.entity(player_entity);
 			player.insert(Animator::new(
@@ -1274,6 +1274,9 @@ fn movement(
 				.with_completed_event(0),
 			));
 
+			*animation = PlayerBundle::walking_animation();
+			atlas.index = animation.first;
+
 			let arrived_event = if let Some((_, source)) = level_cache.keys.get(&destination) {
 				*state.keys.get_mut(source).unwrap() = true;
 				state.player_keys += 1;
@@ -1282,25 +1285,10 @@ fn movement(
 				None
 			};
 
-			// Interrupting the animation is fine, but send the event.
-			if let Some(mut finish) = finish {
-				if let Some(position) = finish.arrived_event {
-					arrived.send(AnimationArrived {
-						entity: player_entity,
-						position,
-					});
-				}
-
-				finish.arrived_event = arrived_event;
-			} else {
-				*animation = PlayerBundle::walking_animation();
-				atlas.index = animation.first;
-
-				player.insert(AnimationFinish {
-					arrived_event,
-					new_animation: Some(PlayerBundle::idle_animation()),
-				});
-			}
+			player.insert(AnimationFinish {
+				arrived_event,
+				new_animation: Some(PlayerBundle::idle_animation()),
+			});
 
 			*grid_pos = destination;
 
@@ -1410,9 +1398,11 @@ fn finish_animation(
 		(Entity, &AnimationFinish, &mut TextureAtlas, &mut Animation),
 		With<Animator<Transform>>,
 	>,
+	mut animation_state: ResMut<'_, NextState<AnimationState>>,
 ) {
 	for completed in completed.read() {
 		let mut command = commands.entity(completed.entity);
+		animation_state.set(AnimationState::Waiting);
 
 		// Transition to old animation.
 		if let Ok((entity, finish, mut atlas, mut animation)) = query.get_mut(completed.entity) {
@@ -1441,6 +1431,7 @@ struct AnimationArrived {
 	position: GridCoords,
 }
 
+// Used to despawn things when movement to a tile has finished.
 #[allow(clippy::needless_pass_by_value)]
 fn animation_arrived_tile(
 	mut commands: Commands<'_, '_>,
@@ -1467,7 +1458,7 @@ fn animation_arrived_tile(
 #[allow(clippy::needless_pass_by_value)]
 fn item_ui(
 	asset_server: Res<'_, AssetServer>,
-	state: Res<'_, State>,
+	state: Res<'_, GameState>,
 	mut contexts: EguiContexts<'_, '_>,
 ) {
 	let key_texture =
@@ -1542,7 +1533,7 @@ fn item_ui(
 
 /// Turn counter UI.
 #[allow(clippy::needless_pass_by_value)]
-fn turn_ui(state: Res<'_, State>, mut contexts: EguiContexts<'_, '_>) {
+fn turn_ui(state: Res<'_, GameState>, mut contexts: EguiContexts<'_, '_>) {
 	let Some(context) = contexts.try_ctx_mut() else {
 		return;
 	};
@@ -1573,7 +1564,7 @@ fn turn_ui(state: Res<'_, State>, mut contexts: EguiContexts<'_, '_>) {
 fn ability_ui(
 	player: Query<'_, '_, (&Spellbook, &ActiveAbility), With<Player>>,
 	mut contexts: EguiContexts<'_, '_>,
-	state: Res<'_, State>,
+	state: Res<'_, GameState>,
 ) {
 	let Ok((spellbook, active_ability)) = player.get_single() else {
 		return;
@@ -1693,11 +1684,11 @@ fn main() {
 		.add_systems(
 			Update,
 			(
-				movement,
+				movement.run_if(in_state(AnimationState::Waiting)),
 				select_ability,
 				door_interactions,
 				spawn_healthbar,
-				cast_ability,
+				cast_ability.run_if(in_state(AnimationState::Waiting)),
 				(handle_ability_event, update_healthbar, death).chain(),
 				(update_cursor_pos, update_target_marker).chain(),
 			)
@@ -1726,10 +1717,11 @@ fn main() {
 		.insert_resource(LevelSelection::Iid(LevelIid::new(
 			"32dd4990-25d0-11ef-be0e-2bd40eab6b07",
 		)))
-		.init_resource::<State>()
+		.init_resource::<GameState>()
 		.init_resource::<LevelCache>()
 		.init_resource::<CursorPos>()
 		.init_resource::<PlayerEntityDestination>()
+		.init_state::<AnimationState>()
 		.add_event::<AnimationArrived>()
 		.add_event::<DeathEvent>()
 		.add_event::<AbilityEvent>()
@@ -1742,7 +1734,7 @@ fn main() {
 		.register_type::<Drops>()
 		.register_type::<Health>()
 		.register_type::<LevelCache>()
-		.register_type::<State>()
+		.register_type::<GameState>()
 		.register_type::<Spellbook>()
 		.run();
 }
