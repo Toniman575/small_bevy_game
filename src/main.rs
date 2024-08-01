@@ -39,6 +39,7 @@ use std::time::Duration;
 #[allow(clippy::wildcard_imports)]
 use bevy::color::palettes::basic::*;
 use bevy::input::keyboard::KeyboardInput;
+use bevy::input::mouse::MouseButtonInput;
 use bevy::input::ButtonState;
 use bevy::prelude::{AssetServer, *};
 use bevy::sprite::{Anchor, MaterialMesh2dBundle};
@@ -65,7 +66,8 @@ use egui::{
 const GRID_SIZE: i32 = 16;
 
 /// State for controlling if the game currently can start a new animation or not
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, States)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Resource, Reflect)]
+#[reflect(Resource)]
 enum AnimationState {
 	/// Waiting for player to start an animation
 	#[default]
@@ -802,6 +804,7 @@ fn handle_ability_event(
 			&ActiveAbility,
 			&GridCoords,
 			&mut Spellbook,
+			&mut Sprite,
 		),
 		(With<Player>, Without<Enemy>),
 	>,
@@ -813,66 +816,82 @@ fn handle_ability_event(
 		(With<Enemy>, Without<Player>),
 	>,
 	mut abilities: EventReader<'_, '_, AbilityEvent>,
-	mut animation_state: ResMut<'_, NextState<AnimationState>>,
+	mut animation_state: ResMut<'_, AnimationState>,
 ) {
 	let target_marker = target_marker.single();
 
 	for ability in abilities.read() {
+		// Attack either a explicit ability target or the target at the cursor.
 		let Some(entity) = ability.0.or(target_marker.0) else {
 			continue;
 		};
 
-		if let Ok((enemy_transform, enemy_grid_coord, mut health)) = enemies.get_mut(entity) {
-			if let Ok((
-				player_entity,
-				player_transform,
-				active_ability,
-				player_grid_coord,
-				mut spellbook,
-			)) = player.get_single_mut()
-			{
-				let attack = spellbook
-					.0
-					.get_mut(&active_ability.0)
-					.expect("Player has to have an active ability.");
+		let (enemy_transform, enemy_grid_coord, mut health) = enemies
+			.get_mut(entity)
+			.expect("found no enemy at the specified position");
 
-				if attack.last_cast.is_none()
-					&& attack.in_euclidean_range(*player_grid_coord, *enemy_grid_coord)
-				{
-					animation_state.set(AnimationState::Running);
-					state.turn += 1;
-					health.current = health.current.saturating_sub(attack.power);
-					let target = player_transform.translation
-						+ (enemy_transform.translation.xy() - player_transform.translation.xy())
-							.normalize()
-							.extend(player_transform.translation.z);
+		let (
+			player_entity,
+			player_transform,
+			active_ability,
+			player_grid_coord,
+			mut spellbook,
+			mut sprite,
+		) = player.single_mut();
 
-					commands.entity(player_entity).insert(Animator::new(
-						Tween::new(
-							EaseMethod::Linear,
-							Duration::from_secs_f64(0.1),
-							TransformPositionLens {
-								start: player_transform.translation,
-								end:   target,
-							},
-						)
-						.then(
-							Tween::new(
-								EaseMethod::Linear,
-								Duration::from_secs_f64(0.1),
-								TransformPositionLens {
-									start: target,
-									end:   player_transform.translation,
-								},
-							)
-							.with_completed_event(0),
-						),
-					));
+		let attack = spellbook
+			.0
+			.get_mut(&active_ability.0)
+			.expect("Player has to have an active ability.");
 
-					if attack.cooldown.is_some() {
-						attack.last_cast = Some(state.turn);
-					}
-				}
+		let dx = enemy_grid_coord.x - player_grid_coord.x;
+		let dy = enemy_grid_coord.y - player_grid_coord.y;
+		let degrees = f64::atan2(dy.into(), dx.into()).to_degrees();
+
+		#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+		match degrees.round() as i16 {
+			-89..90 => sprite.flip_x = false,
+			-180..-90 | 91..=180 => sprite.flip_x = true,
+			-90 | 90 => (),
+			angle => unreachable!("invalid angle found: {}", angle),
+		}
+
+		if attack.last_cast.is_none() && {
+			let distance = (dx.pow(2) + dy.pow(2)).to_f64().sqrt();
+			distance.floor() <= attack.range.into()
+		} {
+			*animation_state = AnimationState::Running;
+			state.turn += 1;
+			health.current = health.current.saturating_sub(attack.power);
+			let target = player_transform.translation
+				+ (enemy_transform.translation.xy() - player_transform.translation.xy())
+					.normalize()
+					.extend(player_transform.translation.z);
+
+			commands.entity(player_entity).insert(Animator::new(
+				Tween::new(
+					EaseMethod::Linear,
+					Duration::from_secs_f64(0.1),
+					TransformPositionLens {
+						start: player_transform.translation,
+						end:   target,
+					},
+				)
+				.then(
+					Tween::new(
+						EaseMethod::Linear,
+						Duration::from_secs_f64(0.1),
+						TransformPositionLens {
+							start: target,
+							end:   player_transform.translation,
+						},
+					)
+					.with_completed_event(0),
+				),
+			));
+
+			if attack.cooldown.is_some() {
+				attack.last_cast = Some(state.turn);
 			}
 		}
 	}
@@ -881,11 +900,21 @@ fn handle_ability_event(
 /// Lets player cast an ability with a mouseclick.
 #[allow(clippy::needless_pass_by_value)]
 fn cast_ability(
-	buttons: Res<'_, ButtonInput<MouseButton>>,
+	mut inputs: EventReader<'_, '_, MouseButtonInput>,
 	mut abilities: EventWriter<'_, AbilityEvent>,
 ) {
-	if buttons.just_pressed(MouseButton::Left) {
+	for input in inputs.read() {
+		let MouseButtonInput {
+			state: ButtonState::Pressed,
+			button: MouseButton::Left,
+			..
+		} = input
+		else {
+			continue;
+		};
+
 		abilities.send(AbilityEvent(None));
+		return;
 	}
 }
 
@@ -1204,7 +1233,7 @@ fn door_interactions(
 fn movement(
 	mut state: ResMut<'_, GameState>,
 	mut commands: Commands<'_, '_>,
-	mut input: EventReader<'_, '_, KeyboardInput>,
+	mut inputs: EventReader<'_, '_, KeyboardInput>,
 	mut cast_ability: EventWriter<'_, AbilityEvent>,
 	mut player: Query<
 		'_,
@@ -1222,95 +1251,106 @@ fn movement(
 	level_cache: Res<'_, LevelCache>,
 	mut level_selection: ResMut<'_, LevelSelection>,
 	mut destination_entity: ResMut<'_, PlayerEntityDestination>,
-	mut animation_state: ResMut<'_, NextState<AnimationState>>,
+	mut animation_state: ResMut<'_, AnimationState>,
+	mut buffered_movement: Local<'_, Option<KeyCode>>,
 ) {
-	let Some(input) = input.read().next() else {
-		return;
-	};
-	let KeyboardInput {
-		state: ButtonState::Pressed,
-		repeat: false,
-		..
-	} = input
-	else {
-		return;
-	};
-
-	let (direction, flip) = match input.key_code {
-		KeyCode::KeyW => (GridCoords::new(0, 1), None),
-		KeyCode::KeyA => (GridCoords::new(-1, 0), Some(true)),
-		KeyCode::KeyS => (GridCoords::new(0, -1), None),
-		KeyCode::KeyD => (GridCoords::new(1, 0), Some(false)),
-		KeyCode::KeyQ => (GridCoords::new(-1, 1), Some(true)),
-		KeyCode::KeyE => (GridCoords::new(1, 1), Some(false)),
-		KeyCode::KeyZ => (GridCoords::new(-1, -1), Some(true)),
-		KeyCode::KeyC => (GridCoords::new(1, -1), Some(false)),
-		_ => return,
-	};
-
-	let (player_entity, transform, mut grid_pos, mut sprite, mut atlas, mut animation) =
-		player.single_mut();
-	let destination = *grid_pos + direction;
-
-	match level_cache.destination(state.deref(), *grid_pos, destination) {
-		Destination::Walkable => {
-			state.turn += 1;
-			animation_state.set(AnimationState::Running);
-
-			let mut player = commands.entity(player_entity);
-			player.insert(Animator::new(
-				Tween::new(
-					EaseMethod::Linear,
-					Duration::from_millis(250),
-					TransformPositionLens {
-						start: transform.translation,
-						end:   utils::grid_coords_to_translation(
-							destination,
-							IVec2::splat(GRID_SIZE),
-						)
-						.extend(transform.translation.z),
-					},
-				)
-				.with_completed_event(0),
-			));
-
-			*animation = PlayerBundle::walking_animation();
-			atlas.index = animation.first;
-
-			let arrived_event = if let Some((_, source)) = level_cache.keys.get(&destination) {
-				*state.keys.get_mut(source).unwrap() = true;
-				state.player_keys += 1;
-				Some(destination)
+	for keycode in (*buffered_movement)
+		.into_iter()
+		.chain(inputs.read().filter_map(|input| {
+			if let KeyboardInput {
+				state: ButtonState::Pressed,
+				repeat: false,
+				..
+			} = input
+			{
+				Some(input.key_code)
 			} else {
 				None
-			};
-
-			player.insert(AnimationFinish {
-				arrived_event,
-				new_animation: Some(PlayerBundle::idle_animation()),
-			});
-
-			*grid_pos = destination;
-
-			if let Some(flip) = flip {
-				sprite.flip_x = flip;
 			}
+		})) {
+		let (direction, flip) = match keycode {
+			KeyCode::KeyW => (GridCoords::new(0, 1), None),
+			KeyCode::KeyA => (GridCoords::new(-1, 0), Some(true)),
+			KeyCode::KeyS => (GridCoords::new(0, -1), None),
+			KeyCode::KeyD => (GridCoords::new(1, 0), Some(false)),
+			KeyCode::KeyQ => (GridCoords::new(-1, 1), Some(true)),
+			KeyCode::KeyE => (GridCoords::new(1, 1), Some(false)),
+			KeyCode::KeyZ => (GridCoords::new(-1, -1), Some(true)),
+			KeyCode::KeyC => (GridCoords::new(1, -1), Some(false)),
+			_ => continue,
+		};
+
+		if animation_state.as_ref() == &AnimationState::Running {
+			*buffered_movement = Some(keycode);
+			continue;
 		}
-		Destination::Wall => (),
-		Destination::Enemy => {
-			cast_ability.send(AbilityEvent(Some(
-				*level_cache.enemies.get(&destination).unwrap(),
-			)));
-		}
-		Destination::Door(door) => {
-			if let LevelSelection::Iid(current_level) = level_selection.as_mut() {
-				*current_level = door.level;
-				destination_entity.0 = Some(door.entity);
-			} else {
-				unreachable!("levels should only be `LevelIid`")
+
+		*buffered_movement = None;
+
+		let (player_entity, transform, mut grid_pos, mut sprite, mut atlas, mut animation) =
+			player.single_mut();
+		let destination = *grid_pos + direction;
+
+		match level_cache.destination(state.deref(), *grid_pos, destination) {
+			Destination::Walkable => {
+				state.turn += 1;
+				*animation_state = AnimationState::Running;
+
+				let mut player = commands.entity(player_entity);
+				player.insert(Animator::new(
+					Tween::new(
+						EaseMethod::Linear,
+						Duration::from_millis(250),
+						TransformPositionLens {
+							start: transform.translation,
+							end:   utils::grid_coords_to_translation(
+								destination,
+								IVec2::splat(GRID_SIZE),
+							)
+							.extend(transform.translation.z),
+						},
+					)
+					.with_completed_event(0),
+				));
+
+				*animation = PlayerBundle::walking_animation();
+				atlas.index = animation.first;
+
+				let arrived_event = if let Some((_, source)) = level_cache.keys.get(&destination) {
+					*state.keys.get_mut(source).unwrap() = true;
+					state.player_keys += 1;
+					Some(destination)
+				} else {
+					None
+				};
+
+				player.insert(AnimationFinish {
+					arrived_event,
+					new_animation: Some(PlayerBundle::idle_animation()),
+				});
+
+				*grid_pos = destination;
+
+				if let Some(flip) = flip {
+					sprite.flip_x = flip;
+				}
 			}
+			Destination::Wall => (),
+			Destination::Enemy => {
+				cast_ability.send(AbilityEvent(Some(
+					*level_cache.enemies.get(&destination).unwrap(),
+				)));
+			}
+			Destination::Door(door) => {
+				if let LevelSelection::Iid(current_level) = level_selection.as_mut() {
+					*current_level = door.level;
+					destination_entity.0 = Some(door.entity);
+				} else {
+					unreachable!("levels should only be `LevelIid`")
+				}
+			}
+			Destination::BeyondBoundary => unreachable!("somehow dropped off the floor"),
 		}
-		Destination::BeyondBoundary => unreachable!("somehow dropped off the floor"),
 	}
 }
 
@@ -1398,11 +1438,11 @@ fn finish_animation(
 		(Entity, &AnimationFinish, &mut TextureAtlas, &mut Animation),
 		With<Animator<Transform>>,
 	>,
-	mut animation_state: ResMut<'_, NextState<AnimationState>>,
+	mut animation_state: ResMut<'_, AnimationState>,
 ) {
 	for completed in completed.read() {
 		let mut command = commands.entity(completed.entity);
-		animation_state.set(AnimationState::Waiting);
+		*animation_state = AnimationState::Waiting;
 
 		// Transition to old animation.
 		if let Ok((entity, finish, mut atlas, mut animation)) = query.get_mut(completed.entity) {
@@ -1684,11 +1724,13 @@ fn main() {
 		.add_systems(
 			Update,
 			(
-				movement.run_if(in_state(AnimationState::Waiting)),
+				movement,
 				select_ability,
 				door_interactions,
 				spawn_healthbar,
-				cast_ability.run_if(in_state(AnimationState::Waiting)),
+				cast_ability.run_if(|debug: Res<'_, AnimationState>| {
+					matches!(debug.deref(), AnimationState::Waiting)
+				}),
 				(handle_ability_event, update_healthbar, death).chain(),
 				(update_cursor_pos, update_target_marker).chain(),
 			)
@@ -1721,7 +1763,7 @@ fn main() {
 		.init_resource::<LevelCache>()
 		.init_resource::<CursorPos>()
 		.init_resource::<PlayerEntityDestination>()
-		.init_state::<AnimationState>()
+		.init_resource::<AnimationState>()
 		.add_event::<AnimationArrived>()
 		.add_event::<DeathEvent>()
 		.add_event::<AbilityEvent>()
