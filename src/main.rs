@@ -5,9 +5,6 @@
 //!   - Replace egui with <https://github.com/UmbraLuminosa/sickle_ui> maybe?
 //! - Improve combat
 //! - Design turn system
-//!   - Assign order to each enemy.
-//!   - Run system after player has made their action with each enemy doing theirs.
-//!   - Enemy walks towards player in their action with A*.
 //!   - When in range, enemy attacks player.
 //!   - Drop items in neighbouring tiles if full.
 //! - Line of sight
@@ -61,19 +58,24 @@ use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
 	SidePanel, Stroke, Widget,
 };
+use pathfinding::prelude::astar;
 
 /// The size of the Grid in pixels.
 const GRID_SIZE: i32 = 16;
 
-/// State for controlling if the game currently can start a new animation or not
+/// State for controlling the current turn state of the game.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Resource, Reflect)]
 #[reflect(Resource)]
-enum AnimationState {
-	/// Waiting for player to start an animation
+enum TurnState {
+	/// Waiting for player input.
 	#[default]
 	Waiting,
-	/// Waiting for an animation to finish
+	/// Player animation running.
 	Running,
+	/// Waiting for enemy behavior to be scheduled.
+	EnemiesWaiting,
+	/// Enemy animation running.
+	EnemiesRunning,
 }
 
 /// Component for tracking health in entities.
@@ -146,16 +148,14 @@ impl Ability {
 
 	/// Checks if ability is in manhatten range.
 	fn in_manhatten_range(&self, origin: GridCoords, target: GridCoords) -> bool {
-		let distance = (target.x - origin.x).abs() + (target.y - origin.y).abs();
+		let distance = manhatten_distance(target, origin);
 
 		distance <= self.range.into()
 	}
 
 	/// Checks if ability is in euclidian range.
 	fn in_euclidean_range(&self, origin: GridCoords, target: GridCoords) -> bool {
-		let distance = ((target.x - origin.x).pow(2) + (target.y - origin.y).pow(2))
-			.to_f64()
-			.sqrt();
+		let distance = euclidean_distance(target, origin);
 
 		distance.floor() <= self.range.into()
 	}
@@ -175,6 +175,18 @@ impl Ability {
 	}
 
 	//fn get_animation(&self) -> impl Tweenable<TransformPositionLens> {}
+}
+
+fn euclidean_distance(target: GridCoords, origin: GridCoords) -> f64 {
+	let distance = ((target.x - origin.x).pow(2) + (target.y - origin.y).pow(2))
+		.to_f64()
+		.sqrt();
+	distance
+}
+
+fn manhatten_distance(target: GridCoords, origin: GridCoords) -> i32 {
+	let distance = (target.x - origin.x).abs() + (target.y - origin.y).abs();
+	distance
 }
 
 /// The collection of abilities an entity can perform.
@@ -349,6 +361,17 @@ impl EnemyBundle {
 		}
 	}
 
+	/// Return walking [`Animation`].
+	fn walking_animation() -> Animation {
+		Animation {
+			timer:     Timer::from_seconds(0.1, TimerMode::Repeating),
+			first:     9,
+			last:      14,
+			repeating: true,
+			anchor:    None,
+		}
+	}
+
 	/// Return death [`Animation`].
 	fn death_animation() -> Animation {
 		Animation {
@@ -460,7 +483,7 @@ impl LevelCache {
 	/// Checks if [`GridCoords`] is a wall or outside of the Level.
 	fn destination(
 		&self,
-		state: &GameState,
+		state: Option<&GameState>,
 		source: GridCoords,
 		destination: GridCoords,
 	) -> Destination {
@@ -473,7 +496,7 @@ impl LevelCache {
 		} else if self.walls.contains(&destination) {
 			Destination::Wall
 		} else if let Some((_, iid, _)) = self.doors.get(&destination) {
-			if *state.doors.get(iid).unwrap() {
+			if state.is_some_and(|state| *state.doors.get(iid).unwrap()) {
 				Destination::Walkable
 			} else {
 				Destination::Wall
@@ -664,20 +687,26 @@ fn level_spawn(
 		player_entity_destination.0 = None;
 	}
 
-	// Our Spritesheets have sprites with different sized tiles in it so we fix them.
-	if let Some((_, _, _, enemy, _)) = enemies.iter().next() {
-		if let Some(layout) = texture_atlas_layouts.get_mut(&enemy.layout) {
-			for texture in layout
-				.textures
-				.get_mut(16..=23)
-				.expect("unexpected enemy skeleton sprite sheet size")
-				.iter_mut()
-			{
-				texture.max.y = 112;
-			}
+	// Clear enemy order.
+	state.enemies.clear();
 
-			layout.textures.truncate(24);
+	// Our Spritesheets have sprites with different sized tiles in it so we fix them.
+	for (_, entity, _, enemy, _) in enemies.iter() {
+		state.enemies.push((entity, true));
+
+		let layout = texture_atlas_layouts
+			.get_mut(&enemy.layout)
+			.expect("texture atlas layout not found for enemy");
+		for texture in layout
+			.textures
+			.get_mut(16..=23)
+			.expect("unexpected enemy skeleton sprite sheet size")
+			.iter_mut()
+		{
+			texture.max.y = 112;
 		}
+
+		layout.textures.truncate(24);
 	}
 }
 
@@ -691,6 +720,8 @@ struct GameState {
 	doors:       HashMap<EntityIid, bool>,
 	/// State of each key.
 	keys:        HashMap<ItemSource, bool>,
+	/// Current enemy order.
+	enemies:     Vec<(Entity, bool)>,
 	/// Amount of keys the player possesses.
 	player_keys: u8,
 }
@@ -816,7 +847,7 @@ fn handle_ability_event(
 		(With<Enemy>, Without<Player>),
 	>,
 	mut abilities: EventReader<'_, '_, AbilityEvent>,
-	mut animation_state: ResMut<'_, AnimationState>,
+	mut animation_state: ResMut<'_, TurnState>,
 ) {
 	let target_marker = target_marker.single();
 
@@ -860,7 +891,7 @@ fn handle_ability_event(
 			let distance = (dx.pow(2) + dy.pow(2)).to_f64().sqrt();
 			distance.floor() <= attack.range.into()
 		} {
-			*animation_state = AnimationState::Running;
+			*animation_state = TurnState::Running;
 			state.turn += 1;
 			health.current = health.current.saturating_sub(attack.power);
 			let target = player_transform.translation
@@ -1002,6 +1033,7 @@ fn death(
 		'_,
 		'_,
 		(
+			Entity,
 			&EntityIid,
 			&GridCoords,
 			&mut Transform,
@@ -1014,10 +1046,11 @@ fn death(
 	>,
 	layers: Query<'_, '_, (Entity, &LayerMetadata)>,
 	mut level_cache: ResMut<'_, LevelCache>,
-	state: Res<'_, GameState>,
+	mut game_state: ResMut<'_, GameState>,
 ) {
 	for event in deaths.read() {
 		let (
+			entity,
 			entity_iid,
 			grid_coords,
 			mut transform,
@@ -1029,6 +1062,7 @@ fn death(
 		) = animations.get_mut(event.0).unwrap();
 
 		let death_animation = if enemy {
+			game_state.enemies.retain(|(enemy, _)| *enemy != entity);
 			EnemyBundle::death_animation()
 		} else if player {
 			unimplemented!()
@@ -1051,7 +1085,7 @@ fn death(
 		for drop in drops.0.drain(..) {
 			match drop.as_str() {
 				"Key" => {
-					if *state
+					if *game_state
 						.keys
 						.get(&ItemSource::Loot(entity_iid.clone()))
 						.unwrap()
@@ -1251,7 +1285,7 @@ fn movement(
 	level_cache: Res<'_, LevelCache>,
 	mut level_selection: ResMut<'_, LevelSelection>,
 	mut destination_entity: ResMut<'_, PlayerEntityDestination>,
-	mut animation_state: ResMut<'_, AnimationState>,
+	mut animation_state: ResMut<'_, TurnState>,
 	mut buffered_movement: Local<'_, Option<KeyCode>>,
 ) {
 	for keycode in (*buffered_movement)
@@ -1280,7 +1314,7 @@ fn movement(
 			_ => continue,
 		};
 
-		if animation_state.as_ref() == &AnimationState::Running {
+		if !matches!(animation_state.as_ref(), TurnState::Waiting) {
 			*buffered_movement = Some(keycode);
 			continue;
 		}
@@ -1291,10 +1325,10 @@ fn movement(
 			player.single_mut();
 		let destination = *grid_pos + direction;
 
-		match level_cache.destination(state.deref(), *grid_pos, destination) {
+		match level_cache.destination(Some(state.deref()), *grid_pos, destination) {
 			Destination::Walkable => {
 				state.turn += 1;
-				*animation_state = AnimationState::Running;
+				*animation_state = TurnState::Running;
 
 				let mut player = commands.entity(player_entity);
 				player.insert(Animator::new(
@@ -1438,11 +1472,11 @@ fn finish_animation(
 		(Entity, &AnimationFinish, &mut TextureAtlas, &mut Animation),
 		With<Animator<Transform>>,
 	>,
-	mut animation_state: ResMut<'_, AnimationState>,
+	mut animation_state: ResMut<'_, TurnState>,
 ) {
 	for completed in completed.read() {
 		let mut command = commands.entity(completed.entity);
-		*animation_state = AnimationState::Waiting;
+		*animation_state = TurnState::EnemiesWaiting;
 
 		// Transition to old animation.
 		if let Ok((entity, finish, mut atlas, mut animation)) = query.get_mut(completed.entity) {
@@ -1703,6 +1737,126 @@ fn select_ability(
 	}
 }
 
+/// Moves enemies when its their turn.
+#[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
+fn move_enemies(
+	mut commands: Commands<'_, '_>,
+	mut game_state: ResMut<'_, GameState>,
+	mut level_cache: ResMut<'_, LevelCache>,
+	mut turn_state: ResMut<'_, TurnState>,
+	tile_map_size: Query<'_, '_, &TilemapSize>,
+	player: Query<'_, '_, &GridCoords, (Without<Enemy>, With<Player>)>,
+	mut enemies: Query<
+		'_,
+		'_,
+		(
+			Entity,
+			&mut GridCoords,
+			&Transform,
+			&mut Sprite,
+			&mut TextureAtlas,
+			&mut Animation,
+		),
+		(With<Enemy>, Without<Player>),
+	>,
+) {
+	for (enemy, ready) in game_state.enemies.iter_mut().filter(|(_, ready)| *ready) {
+		*ready = false;
+
+		let tile_map_size = tile_map_size.single();
+		let player_pos = player.single();
+		let (
+			enemy_entity,
+			mut enemy_pos,
+			enemy_transform,
+			mut enemy_sprite,
+			mut enemy_atlas,
+			mut enemy_animation,
+		) = enemies
+			.get_mut(*enemy)
+			.expect("enemey for its turn not found");
+
+		let dx = player_pos.x - enemy_pos.x;
+		let dy = player_pos.y - enemy_pos.y;
+		let degrees = f64::atan2(dy.into(), dx.into()).to_degrees();
+
+		#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+		match degrees.round() as i16 {
+			-89..90 => enemy_sprite.flip_x = false,
+			-180..-90 | 91..=180 => enemy_sprite.flip_x = true,
+			-90 | 90 => (),
+			angle => unreachable!("invalid angle found: {}", angle),
+		}
+
+		let Some((path, _)) = astar(
+			enemy_pos.as_ref(),
+			|grid_pos| {
+				Neighbors::get_square_neighboring_positions(
+					&TilePos::from(*grid_pos),
+					tile_map_size,
+					true,
+				)
+				.iter()
+				.filter_map(|pos| {
+					let destination = GridCoords::from(*pos);
+					let walkable = level_cache.destination(None, *enemy_pos, destination);
+					matches!(walkable, Destination::Walkable).then_some((destination, 1))
+				})
+				.collect::<Vec<_>>()
+			},
+			|start| {
+				#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+				let distance = euclidean_distance(*player_pos, *start) as i32;
+				distance
+			},
+			|current_pos| current_pos == player_pos,
+		) else {
+			continue;
+		};
+
+		let destination = path.get(1).expect("found empty path");
+
+		let mut enemy_commands = commands.entity(enemy_entity);
+		enemy_commands.insert(Animator::new(
+			Tween::new(
+				EaseMethod::Linear,
+				Duration::from_millis(250),
+				TransformPositionLens {
+					start: enemy_transform.translation,
+					end:   utils::grid_coords_to_translation(*destination, IVec2::splat(GRID_SIZE))
+						.extend(enemy_transform.translation.z),
+				},
+			)
+			.with_completed_event(0),
+		));
+
+		*enemy_animation = EnemyBundle::walking_animation();
+		enemy_atlas.index = enemy_animation.first;
+
+		enemy_commands.insert(AnimationFinish {
+			arrived_event: None,
+			new_animation: Some(EnemyBundle::idle_animation()),
+		});
+
+		let enemy = level_cache
+			.enemies
+			.remove(enemy_pos.as_ref())
+			.expect("found no enemy at the moved position");
+		assert_eq!(enemy, enemy_entity, "wrong enemy found in level cache");
+		level_cache.enemies.insert(*destination, enemy);
+		*enemy_pos = *destination;
+
+		*turn_state = TurnState::EnemiesRunning;
+		return;
+	}
+
+	game_state
+		.enemies
+		.iter_mut()
+		.for_each(|(_, ready)| *ready = true);
+	*turn_state = TurnState::Waiting;
+}
+
 fn main() {
 	App::new()
 		.add_plugins((
@@ -1725,11 +1879,14 @@ fn main() {
 			Update,
 			(
 				movement,
+				move_enemies.run_if(|debug: Res<'_, TurnState>| {
+					matches!(debug.deref(), TurnState::EnemiesWaiting)
+				}),
 				select_ability,
 				door_interactions,
 				spawn_healthbar,
-				cast_ability.run_if(|debug: Res<'_, AnimationState>| {
-					matches!(debug.deref(), AnimationState::Waiting)
+				cast_ability.run_if(|debug: Res<'_, TurnState>| {
+					matches!(debug.deref(), TurnState::Waiting)
 				}),
 				(handle_ability_event, update_healthbar, death).chain(),
 				(update_cursor_pos, update_target_marker).chain(),
@@ -1763,7 +1920,7 @@ fn main() {
 		.init_resource::<LevelCache>()
 		.init_resource::<CursorPos>()
 		.init_resource::<PlayerEntityDestination>()
-		.init_resource::<AnimationState>()
+		.init_resource::<TurnState>()
 		.add_event::<AnimationArrived>()
 		.add_event::<DeathEvent>()
 		.add_event::<AbilityEvent>()
@@ -1777,6 +1934,7 @@ fn main() {
 		.register_type::<Health>()
 		.register_type::<LevelCache>()
 		.register_type::<GameState>()
+		.register_type::<TurnState>()
 		.register_type::<Spellbook>()
 		.run();
 }

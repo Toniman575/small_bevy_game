@@ -702,6 +702,25 @@
 							],
 							"__worldX": 184,
 							"__worldY": 328
+						},
+						{
+							"__identifier": "Skeleton",
+							"__grid": [11,7],
+							"__pivot": [0.5,0.5],
+							"__tags": [],
+							"__tile": { "tilesetUid": 95, "x": 0, "y": 0, "w": 32, "h": 32 },
+							"__smartColor": "#EAD4AA",
+							"iid": "be0bf3b0-4ce0-11ef-95ea-6d8956c98bd2",
+							"width": 16,
+							"height": 16,
+							"defUid": 85,
+							"px": [184,120],
+							"fieldInstances": [
+								{ "__identifier": "Health", "__type": "Int", "__value": 50, "__tile": null, "defUid": 94, "realEditorValues": [] },
+								{ "__identifier": "Drops", "__type": "Array<String>", "__value": [], "__tile": null, "defUid": 96, "realEditorValues": [] }
+							],
+							"__worldX": 184,
+							"__worldY": 376
 						}
 					]
 				},
