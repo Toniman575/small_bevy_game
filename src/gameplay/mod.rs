@@ -17,7 +17,7 @@ use bevy_tweening::{Animator, EaseMethod, Tween};
 pub(crate) use self::enemy::{Enemy, EnemyBundle};
 pub(crate) use self::player::{Player, PlayerBundle};
 use crate::animation::{Animation, AnimationFinish};
-use crate::{util, Drops, GameState, ItemSource, Key, LevelCache, TurnState};
+use crate::{util, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, TurnState};
 
 /// Component for tracking health in entities.
 #[derive(Clone, Component, Debug, Default, Reflect, PartialEq, Eq, Copy)]
@@ -225,9 +225,9 @@ pub(crate) fn handle_ability_event(
 		} {
 			if player.is_some() {
 				state.turn += 1;
-				*animation_state = TurnState::Running;
+				*animation_state = TurnState::PlayerBusy(PlayerBusy::Attacking);
 			} else if enemy.is_some() {
-				*animation_state = TurnState::EnemiesRunning;
+				*animation_state = TurnState::EnemiesBusy;
 			} else {
 				panic!("entity has to be enemy or player");
 			}

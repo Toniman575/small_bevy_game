@@ -1,11 +1,9 @@
 //! TODO:
 //! - Refactor Code
-//!   - Split into multiple files.
 //!   - Replace animation code with <https://github.com/merwaaan/bevy_spritesheet_animation>.
 //!   - Replace egui with <https://github.com/UmbraLuminosa/sickle_ui> maybe?
 //! - Improve combat
 //! - Design turn system
-//!   - When in range, enemy attacks player.
 //!   - Drop items in neighbouring tiles if full.
 //! - Line of sight
 //!   - FoW for player.
@@ -49,7 +47,7 @@ use bevy::utils::{Entry, HashMap, HashSet};
 use bevy::window::PrimaryWindow;
 use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
-use bevy_ecs_tilemap::helpers::square_grid::neighbors::Neighbors;
+use bevy_ecs_tilemap::helpers::square_grid::neighbors::{Neighbors, SquareDirection};
 use bevy_ecs_tilemap::prelude::*;
 use bevy_egui::egui::{Margin, TextWrapMode, TopBottomPanel};
 use bevy_egui::{egui, EguiPlugin, EguiSet};
@@ -62,14 +60,13 @@ use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
 	SidePanel, Stroke, Widget,
 };
-use gameplay::{
-	death, handle_ability_event, spawn_healthbar, tick_cooldowns, update_healthbar, AbilityEvent,
-	ActiveAbility, DeathEvent, Enemy, EnemyBundle, Health, Player, PlayerBundle, Spellbook,
-};
-use helpers::square_grid::neighbors::SquareDirection;
 use pathfinding::prelude::astar;
 
 use self::animation::{Animation, AnimationArrived, AnimationFinish};
+use self::gameplay::{
+	death, handle_ability_event, spawn_healthbar, tick_cooldowns, update_healthbar, AbilityEvent,
+	ActiveAbility, DeathEvent, Enemy, EnemyBundle, Health, Player, PlayerBundle, Spellbook,
+};
 
 /// The size of the Grid in pixels.
 const GRID_SIZE: i32 = 16;
@@ -80,13 +77,22 @@ const GRID_SIZE: i32 = 16;
 enum TurnState {
 	/// Waiting for player input.
 	#[default]
-	Waiting,
+	PlayerWaiting,
 	/// Player animation running.
-	Running,
+	PlayerBusy(PlayerBusy),
 	/// Waiting for enemy behavior to be scheduled.
 	EnemiesWaiting,
 	/// Enemy animation running.
-	EnemiesRunning,
+	EnemiesBusy,
+}
+
+/// State of player when [`TurnState::Busy`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Resource, Reflect)]
+enum PlayerBusy {
+	/// Player is attacking.
+	Attacking,
+	/// Player is moving.
+	Moving,
 }
 
 /// Marker components.
@@ -318,19 +324,18 @@ fn level_spawn(
 	mut state: ResMut<'_, GameState>,
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut level_events: EventReader<'_, '_, LevelEvent>,
-	mut texture_atlas_layouts: ResMut<'_, Assets<TextureAtlasLayout>>,
 	walls: Query<'_, '_, &GridCoords, (With<Wall>, Without<Player>)>,
 	enemies: Query<
 		'_,
 		'_,
-		(&GridCoords, Entity, &EntityIid, &TextureAtlas, &Drops),
+		(&GridCoords, Entity, &EntityIid, &Drops),
 		(With<Enemy>, Without<Player>),
 	>,
 	keys: Query<'_, '_, (&GridCoords, Entity, &EntityIid), (With<Key>, Without<Player>)>,
 	mut doors: Query<
 		'_,
 		'_,
-		(Entity, &GridCoords, &EntityIid, &mut TextureAtlas, &Door),
+		(Entity, &GridCoords, &EntityIid, &Door),
 		(Without<Player>, Without<Enemy>),
 	>,
 	mut player_entity_destination: ResMut<'_, PlayerEntityDestination>,
@@ -354,7 +359,7 @@ fn level_spawn(
 
 	let mut enemies_map = HashMap::new();
 
-	for (grid_coords, entity, iid, _, drops) in &enemies {
+	for (grid_coords, entity, iid, drops) in &enemies {
 		enemies_map.insert(*grid_coords, entity);
 
 		if drops.0.iter().any(|drop| drop == "Key") {
@@ -382,7 +387,7 @@ fn level_spawn(
 
 	let mut doors_map = HashMap::new();
 
-	for (entity, grid_coords, iid, mut atlas, door) in &mut doors {
+	for (entity, grid_coords, iid, door) in &mut doors {
 		doors_map.insert(*grid_coords, (entity, iid.clone(), door.clone()));
 
 		let open = match state.doors.entry(iid.clone()) {
@@ -391,9 +396,7 @@ fn level_spawn(
 		};
 
 		if open {
-			atlas.index = 133;
-		} else {
-			atlas.index = 108;
+			commands.trigger_targets(DoorOpen, entity);
 		}
 
 		state.doors.entry(door.entity.clone()).or_insert(open);
@@ -428,10 +431,19 @@ fn level_spawn(
 	// Clear enemy order.
 	state.enemies.clear();
 
-	// Our Spritesheets have sprites with different sized tiles in it so we fix them.
-	for (_, entity, _, enemy, _) in enemies.iter() {
+	// Set enemies to ready and add them to the state.
+	for (_, entity, ..) in enemies.iter() {
 		state.enemies.push((entity, true));
+	}
+}
 
+/// Every time enemies are added we need to customize their [`TextureAtlasLayout`].
+#[allow(clippy::needless_pass_by_value)]
+fn fix_sprite_layout(
+	mut texture_atlas_layouts: ResMut<'_, Assets<TextureAtlasLayout>>,
+	enemies: Query<'_, '_, &TextureAtlas, Added<Enemy>>,
+) {
+	for enemy in enemies.iter() {
 		let layout = texture_atlas_layouts
 			.get_mut(&enemy.layout)
 			.expect("texture atlas layout not found for enemy");
@@ -446,6 +458,20 @@ fn level_spawn(
 
 		layout.textures.truncate(24);
 	}
+}
+
+/// [`Trigger`] for opening a door.
+#[derive(Event)]
+struct DoorOpen;
+
+/// Opens a door when triggered.
+#[allow(clippy::needless_pass_by_value)]
+fn door_trigger(
+	trigger: Trigger<'_, DoorOpen>,
+	mut doors: Query<'_, '_, &mut TextureAtlas, With<Door>>,
+) {
+	let mut atlas = doors.get_mut(trigger.entity()).unwrap();
+	atlas.index = 133;
 }
 
 /// Game state.
@@ -642,23 +668,28 @@ fn update_target_marker(
 /// Updates Camera with player movement.
 #[allow(clippy::needless_pass_by_value)]
 fn camera_update(
+	turn_state: Res<'_, TurnState>,
 	player: Query<'_, '_, &Transform, (With<Player>, Changed<Transform>)>,
 	mut cam: Query<'_, '_, &mut Transform, (With<Camera>, Without<Player>)>,
 ) {
-	if let Ok(player) = player.get_single() {
+	if let TurnState::PlayerBusy(PlayerBusy::Attacking) = turn_state.deref() {
+		return;
+	}
+
+	if let Ok(player_transform) = player.get_single() {
 		let mut cam = cam.single_mut();
 
-		cam.translation.x = player.translation.x;
-		cam.translation.y = player.translation.y;
+		cam.translation.x = player_transform.translation.x;
+		cam.translation.y = player_transform.translation.y;
 	}
 }
 
 /// Opens and closes doors.
 #[allow(clippy::needless_pass_by_value)]
 fn door_interactions(
+	mut commands: Commands<'_, '_>,
 	mut state: ResMut<'_, GameState>,
 	level_cache: Res<'_, LevelCache>,
-	mut doors_query: Query<'_, '_, &mut TextureAtlas, With<Door>>,
 	tile_map_size: Query<'_, '_, &TilemapSize>,
 	player: Query<'_, '_, &GridCoords, With<Player>>,
 	mut input: EventReader<'_, '_, KeyboardInput>,
@@ -702,7 +733,7 @@ fn door_interactions(
 					*open = true;
 					*player_keys -= 1;
 					*state.doors.get_mut(&door.entity).unwrap() = true;
-					doors_query.get_mut(*entity).unwrap().index = 133;
+					commands.trigger_targets(DoorOpen, *entity);
 				}
 			}
 		}
@@ -766,7 +797,7 @@ fn player_movement(
 			_ => continue,
 		};
 
-		if !matches!(animation_state.as_ref(), TurnState::Waiting) {
+		if !matches!(animation_state.as_ref(), TurnState::PlayerWaiting) {
 			*buffered_movement = Some(keycode);
 			continue;
 		}
@@ -787,7 +818,7 @@ fn player_movement(
 		match level_cache.destination(Some(state.deref()), *grid_pos, destination) {
 			Destination::Walkable => {
 				state.turn += 1;
-				*animation_state = TurnState::Running;
+				*animation_state = TurnState::PlayerBusy(PlayerBusy::Moving);
 
 				let mut player = commands.entity(player_entity);
 				player.insert(Animator::new(
@@ -1211,7 +1242,7 @@ fn move_enemies(
 		level_cache.enemies.insert(*destination, enemy);
 		*enemy_pos = *destination;
 
-		*turn_state = TurnState::EnemiesRunning;
+		*turn_state = TurnState::EnemiesBusy;
 		return;
 	}
 
@@ -1219,7 +1250,7 @@ fn move_enemies(
 		.enemies
 		.iter_mut()
 		.for_each(|(_, ready)| *ready = true);
-	*turn_state = TurnState::Waiting;
+	*turn_state = TurnState::PlayerWaiting;
 }
 
 fn main() {
@@ -1239,7 +1270,7 @@ fn main() {
 		.insert_resource(Msaa::Off)
 		.add_systems(Startup, startup)
 		.add_systems(First, level_spawn)
-		.add_systems(PreUpdate, debug)
+		.add_systems(PreUpdate, (fix_sprite_layout, debug))
 		.add_systems(
 			Update,
 			(
@@ -1251,7 +1282,7 @@ fn main() {
 				door_interactions,
 				spawn_healthbar,
 				cast_ability.run_if(|debug: Res<'_, TurnState>| {
-					matches!(debug.deref(), TurnState::Waiting)
+					matches!(debug.deref(), TurnState::PlayerWaiting)
 				}),
 				(handle_ability_event, update_healthbar, death).chain(),
 				(update_cursor_pos, update_target_marker).chain(),
@@ -1301,5 +1332,6 @@ fn main() {
 		.register_type::<GameState>()
 		.register_type::<TurnState>()
 		.register_type::<Spellbook>()
+		.observe(door_trigger)
 		.run();
 }
