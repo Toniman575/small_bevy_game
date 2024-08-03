@@ -36,33 +36,28 @@ mod util;
 
 use std::mem;
 use std::ops::{Deref, DerefMut};
-use std::time::Duration;
 
 use bevy::color::palettes::basic::*;
 use bevy::input::keyboard::KeyboardInput;
-use bevy::input::mouse::MouseButtonInput;
 use bevy::input::ButtonState;
 use bevy::prelude::{AssetServer, *};
 use bevy::utils::{Entry, HashMap, HashSet};
 use bevy::window::PrimaryWindow;
 use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
-use bevy_ecs_tilemap::helpers::square_grid::neighbors::{Neighbors, SquareDirection};
 use bevy_ecs_tilemap::prelude::*;
 use bevy_egui::egui::{Margin, TextWrapMode, TopBottomPanel};
 use bevy_egui::{egui, EguiPlugin, EguiSet};
 use bevy_inspector_egui::bevy_egui::EguiContexts;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_pancam::{MoveMode, PanCam, PanCamPlugin};
-use bevy_tweening::lens::TransformPositionLens;
-use bevy_tweening::{Animator, EaseMethod, Tween, TweeningPlugin};
+use bevy_tweening::{Animator, TweeningPlugin};
 use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
 	SidePanel, Stroke, Widget,
 };
-use pathfinding::prelude::astar;
+use gameplay::{cast_ability, door_interactions, move_enemies, player_movement, select_ability};
 
-use self::animation::{Animation, AnimationArrived, AnimationFinish};
 use self::gameplay::{
 	death, handle_ability_event, spawn_healthbar, tick_cooldowns, update_healthbar, AbilityEvent,
 	ActiveAbility, DeathEvent, Enemy, EnemyBundle, Health, Player, PlayerBundle, Spellbook,
@@ -227,7 +222,7 @@ impl LevelCache {
 	/// Checks if [`GridCoords`] is a wall or outside of the Level.
 	fn destination(
 		&self,
-		state: Option<&GameState>,
+		doors: &HashMap<EntityIid, bool>,
 		source: GridCoords,
 		destination: GridCoords,
 	) -> Destination {
@@ -240,7 +235,7 @@ impl LevelCache {
 		} else if self.walls.contains(&destination) {
 			Destination::Wall
 		} else if let Some((_, iid, _)) = self.doors.get(&destination) {
-			if state.is_some_and(|state| *state.doors.get(iid).unwrap()) {
+			if *doors.get(iid).unwrap() {
 				Destination::Walkable
 			} else {
 				Destination::Wall
@@ -585,36 +580,6 @@ fn update_cursor_pos(
 	}
 }
 
-/// Lets player cast an ability with a mouseclick.
-#[allow(clippy::needless_pass_by_value)]
-fn cast_ability(
-	mut inputs: EventReader<'_, '_, MouseButtonInput>,
-	mut abilities: EventWriter<'_, AbilityEvent>,
-	player: Query<'_, '_, (Entity, &ActiveAbility), With<Player>>,
-	targeting_marker: Query<'_, '_, &TargetingMarker>,
-) {
-	let Some(target_entity) = targeting_marker.single().0 else {
-		return;
-	};
-
-	for input in inputs.read() {
-		let MouseButtonInput {
-			state: ButtonState::Pressed,
-			button: MouseButton::Left,
-			..
-		} = input
-		else {
-			continue;
-		};
-
-		let (player_entity, ability) = player.single();
-
-		abilities.send(AbilityEvent::new(player_entity, target_entity, ability.0));
-
-		return;
-	}
-}
-
 /// Updates the `TargetingMarker` with updated `CursorPos`.
 #[allow(clippy::needless_pass_by_value)]
 fn update_target_marker(
@@ -681,203 +646,6 @@ fn camera_update(
 
 		cam.translation.x = player_transform.translation.x;
 		cam.translation.y = player_transform.translation.y;
-	}
-}
-
-/// Opens and closes doors.
-#[allow(clippy::needless_pass_by_value)]
-fn door_interactions(
-	mut commands: Commands<'_, '_>,
-	mut state: ResMut<'_, GameState>,
-	level_cache: Res<'_, LevelCache>,
-	tile_map_size: Query<'_, '_, &TilemapSize>,
-	player: Query<'_, '_, &GridCoords, With<Player>>,
-	mut input: EventReader<'_, '_, KeyboardInput>,
-) {
-	let Some(input) = input.read().next() else {
-		return;
-	};
-	let KeyboardInput {
-		state: ButtonState::Pressed,
-		repeat: false,
-		..
-	} = input
-	else {
-		return;
-	};
-
-	if let KeyCode::KeyF = input.key_code {
-		let player_grid_coords = player.single();
-		let tile_map_size = tile_map_size.single();
-
-		for tile_pos in Neighbors::get_square_neighboring_positions(
-			&TilePos::from(*player_grid_coords),
-			tile_map_size,
-			true,
-		)
-		.iter()
-		{
-			if let Some((entity, iid, door)) = level_cache.doors.get(&GridCoords::from(*tile_pos)) {
-				let GameState {
-					turn,
-					doors,
-					player_keys,
-					..
-				} = state.deref_mut();
-
-				let open = doors.get_mut(iid).unwrap();
-
-				if !*open && *player_keys > 0 {
-					*turn += 1;
-
-					*open = true;
-					*player_keys -= 1;
-					*state.doors.get_mut(&door.entity).unwrap() = true;
-					commands.trigger_targets(DoorOpen, *entity);
-				}
-			}
-		}
-	}
-}
-
-/// Player movement.
-#[allow(
-	clippy::needless_pass_by_value,
-	clippy::too_many_arguments,
-	clippy::type_complexity
-)]
-fn player_movement(
-	mut state: ResMut<'_, GameState>,
-	mut commands: Commands<'_, '_>,
-	mut inputs: EventReader<'_, '_, KeyboardInput>,
-	mut cast_ability: EventWriter<'_, AbilityEvent>,
-	mut player: Query<
-		'_,
-		'_,
-		(
-			Entity,
-			&ActiveAbility,
-			&Transform,
-			&mut GridCoords,
-			&mut Sprite,
-			&mut TextureAtlas,
-			&mut Animation,
-		),
-		With<Player>,
-	>,
-	level_cache: Res<'_, LevelCache>,
-	mut level_selection: ResMut<'_, LevelSelection>,
-	mut destination_entity: ResMut<'_, PlayerEntityDestination>,
-	mut animation_state: ResMut<'_, TurnState>,
-	mut buffered_movement: Local<'_, Option<KeyCode>>,
-) {
-	for keycode in (*buffered_movement)
-		.into_iter()
-		.chain(inputs.read().filter_map(|input| {
-			if let KeyboardInput {
-				state: ButtonState::Pressed,
-				repeat: false,
-				..
-			} = input
-			{
-				Some(input.key_code)
-			} else {
-				None
-			}
-		})) {
-		let (direction, flip) = match keycode {
-			KeyCode::KeyW => (GridCoords::new(0, 1), None),
-			KeyCode::KeyA => (GridCoords::new(-1, 0), Some(true)),
-			KeyCode::KeyS => (GridCoords::new(0, -1), None),
-			KeyCode::KeyD => (GridCoords::new(1, 0), Some(false)),
-			KeyCode::KeyQ => (GridCoords::new(-1, 1), Some(true)),
-			KeyCode::KeyE => (GridCoords::new(1, 1), Some(false)),
-			KeyCode::KeyZ => (GridCoords::new(-1, -1), Some(true)),
-			KeyCode::KeyC => (GridCoords::new(1, -1), Some(false)),
-			_ => continue,
-		};
-
-		if !matches!(animation_state.as_ref(), TurnState::PlayerWaiting) {
-			*buffered_movement = Some(keycode);
-			continue;
-		}
-
-		*buffered_movement = None;
-
-		let (
-			player_entity,
-			active_ability,
-			transform,
-			mut grid_pos,
-			mut sprite,
-			mut atlas,
-			mut animation,
-		) = player.single_mut();
-		let destination = *grid_pos + direction;
-
-		match level_cache.destination(Some(state.deref()), *grid_pos, destination) {
-			Destination::Walkable => {
-				state.turn += 1;
-				*animation_state = TurnState::PlayerBusy(PlayerBusy::Moving);
-
-				let mut player = commands.entity(player_entity);
-				player.insert(Animator::new(
-					Tween::new(
-						EaseMethod::Linear,
-						Duration::from_millis(250),
-						TransformPositionLens {
-							start: transform.translation,
-							end:   utils::grid_coords_to_translation(
-								destination,
-								IVec2::splat(GRID_SIZE),
-							)
-							.extend(transform.translation.z),
-						},
-					)
-					.with_completed_event(0),
-				));
-
-				*animation = PlayerBundle::walking_animation();
-				atlas.index = animation.first;
-
-				let arrived_event = if let Some((_, source)) = level_cache.keys.get(&destination) {
-					*state.keys.get_mut(source).unwrap() = true;
-					state.player_keys += 1;
-					Some(destination)
-				} else {
-					None
-				};
-
-				player.insert(AnimationFinish {
-					arrived_event,
-					new_animation: Some(PlayerBundle::idle_animation()),
-					next_state: Some(TurnState::EnemiesWaiting),
-				});
-
-				*grid_pos = destination;
-
-				if let Some(flip) = flip {
-					sprite.flip_x = flip;
-				}
-			}
-			Destination::Wall => (),
-			Destination::Enemy => {
-				cast_ability.send(AbilityEvent::new(
-					player_entity,
-					*level_cache.enemies.get(&destination).unwrap(),
-					active_ability.0,
-				));
-			}
-			Destination::Door(door) => {
-				if let LevelSelection::Iid(current_level) = level_selection.as_mut() {
-					*current_level = door.level;
-					destination_entity.0 = Some(door.entity);
-				} else {
-					unreachable!("levels should only be `LevelIid`")
-				}
-			}
-			Destination::BeyondBoundary => unreachable!("somehow dropped off the floor"),
-		}
 	}
 }
 
@@ -1039,220 +807,6 @@ fn ability_ui(
 	});
 }
 
-/// Selects ability when pressing number keys.
-fn select_ability(
-	mut input: EventReader<'_, '_, KeyboardInput>,
-	mut player: Query<'_, '_, (&Spellbook, &mut ActiveAbility), With<Player>>,
-) {
-	let Ok((spellbook, mut active_ability)) = player.get_single_mut() else {
-		return;
-	};
-
-	for ev in input.read() {
-		let mut spellbook_iter = spellbook.0.iter();
-
-		if let ButtonState::Pressed = ev.state {
-			match ev.key_code {
-				KeyCode::Digit1 => {
-					active_ability.0.clone_from(
-						spellbook_iter
-							.next()
-							.expect("first slot always needs to have autoattack")
-							.0,
-					);
-				}
-				KeyCode::Digit2 => {
-					if let Some(name) = spellbook_iter.nth(1) {
-						active_ability.0.clone_from(name.0);
-					}
-				}
-				KeyCode::Digit3 => {
-					if let Some(name) = spellbook_iter.nth(2) {
-						active_ability.0.clone_from(name.0);
-					}
-				}
-				KeyCode::Digit4 => {
-					if let Some(name) = spellbook_iter.nth(3) {
-						active_ability.0.clone_from(name.0);
-					}
-				}
-				KeyCode::Digit5 => {
-					if let Some(name) = spellbook_iter.nth(4) {
-						active_ability.0.clone_from(name.0);
-					}
-				}
-				KeyCode::Digit6 => {
-					if let Some(name) = spellbook_iter.nth(5) {
-						active_ability.0.clone_from(name.0);
-					}
-				}
-				KeyCode::Digit7 => {
-					if let Some(name) = spellbook_iter.nth(6) {
-						active_ability.0.clone_from(name.0);
-					}
-				}
-				KeyCode::Digit8 => {
-					if let Some(name) = spellbook_iter.nth(7) {
-						active_ability.0.clone_from(name.0);
-					}
-				}
-				KeyCode::Digit9 => {
-					if let Some(name) = spellbook_iter.nth(8) {
-						active_ability.0.clone_from(name.0);
-					}
-				}
-				_ => {}
-			}
-		}
-	}
-}
-
-/// Moves enemies when its their turn.
-#[allow(
-	clippy::needless_pass_by_value,
-	clippy::type_complexity,
-	clippy::too_many_arguments
-)]
-fn move_enemies(
-	mut commands: Commands<'_, '_>,
-	mut game_state: ResMut<'_, GameState>,
-	mut level_cache: ResMut<'_, LevelCache>,
-	mut turn_state: ResMut<'_, TurnState>,
-	tile_map_size: Query<'_, '_, &TilemapSize>,
-	player: Query<'_, '_, (Entity, &GridCoords), (Without<Enemy>, With<Player>)>,
-	mut enemies: Query<
-		'_,
-		'_,
-		(
-			Entity,
-			&mut GridCoords,
-			&Transform,
-			&mut Sprite,
-			&Spellbook,
-			&mut TextureAtlas,
-			&mut Animation,
-		),
-		(With<Enemy>, Without<Player>),
-	>,
-	mut cast_ability: EventWriter<'_, AbilityEvent>,
-) {
-	for (enemy, ready) in game_state.enemies.iter_mut().filter(|(_, ready)| *ready) {
-		*ready = false;
-
-		let tile_map_size = tile_map_size.single();
-		let (player_entity, player_pos) = player.single();
-		let (
-			enemy_entity,
-			mut enemy_pos,
-			enemy_transform,
-			mut enemy_sprite,
-			spellbook,
-			mut enemy_atlas,
-			mut enemy_animation,
-		) = enemies
-			.get_mut(*enemy)
-			.expect("enemy for its turn not found");
-
-		let dx = player_pos.x - enemy_pos.x;
-		let dy = player_pos.y - enemy_pos.y;
-		let degrees = f64::atan2(dy.into(), dx.into()).to_degrees();
-
-		#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-		match degrees.round() as i16 {
-			-89..90 => enemy_sprite.flip_x = false,
-			-180..-90 | 91..=180 => enemy_sprite.flip_x = true,
-			-90 | 90 => (),
-			angle => unreachable!("invalid angle found: {}", angle),
-		}
-
-		let Some((path, _)) = astar(
-			enemy_pos.as_ref(),
-			|grid_pos| {
-				/// We want cardinal directions first.
-				const DIRECTIONS: [SquareDirection; 8] = [
-					SquareDirection::East,
-					SquareDirection::North,
-					SquareDirection::West,
-					SquareDirection::South,
-					SquareDirection::NorthEast,
-					SquareDirection::NorthWest,
-					SquareDirection::SouthWest,
-					SquareDirection::SouthEast,
-				];
-				let neighbors = Neighbors::get_square_neighboring_positions(
-					&TilePos::from(*grid_pos),
-					tile_map_size,
-					true,
-				);
-				DIRECTIONS
-					.into_iter()
-					.filter_map(|direction| neighbors.get(direction))
-					.filter_map(|pos| {
-						let destination = GridCoords::from(*pos);
-						let walkable = level_cache.destination(None, *enemy_pos, destination);
-						matches!(walkable, Destination::Walkable).then_some((destination, 1))
-					})
-					.collect::<Vec<_>>()
-			},
-			|start| {
-				#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-				let distance = util::euclidean_distance(*player_pos, *start) as i32;
-				distance
-			},
-			|current_pos| current_pos == player_pos,
-		) else {
-			continue;
-		};
-
-		let destination = path.get(1).expect("found empty path");
-
-		if destination == player_pos {
-			cast_ability.send(AbilityEvent::new(enemy_entity, player_entity, 0));
-			return;
-		}
-
-		let mut enemy_commands = commands.entity(enemy_entity);
-		enemy_commands.insert(Animator::new(
-			Tween::new(
-				EaseMethod::Linear,
-				Duration::from_millis(250),
-				TransformPositionLens {
-					start: enemy_transform.translation,
-					end:   utils::grid_coords_to_translation(*destination, IVec2::splat(GRID_SIZE))
-						.extend(enemy_transform.translation.z),
-				},
-			)
-			.with_completed_event(0),
-		));
-
-		*enemy_animation = EnemyBundle::walking_animation();
-		enemy_atlas.index = enemy_animation.first;
-
-		enemy_commands.insert(AnimationFinish {
-			arrived_event: None,
-			new_animation: Some(EnemyBundle::idle_animation()),
-			next_state:    Some(TurnState::EnemiesWaiting),
-		});
-
-		let enemy = level_cache
-			.enemies
-			.remove(enemy_pos.as_ref())
-			.expect("found no enemy at the moved position");
-		assert_eq!(enemy, enemy_entity, "wrong enemy found in level cache");
-		level_cache.enemies.insert(*destination, enemy);
-		*enemy_pos = *destination;
-
-		*turn_state = TurnState::EnemiesBusy;
-		return;
-	}
-
-	game_state
-		.enemies
-		.iter_mut()
-		.for_each(|(_, ready)| *ready = true);
-	*turn_state = TurnState::PlayerWaiting;
-}
-
 fn main() {
 	App::new()
 		.add_plugins((
@@ -1297,7 +851,6 @@ fn main() {
 				animation::animate,
 				(
 					animation::finish_animation,
-					animation::animation_arrived_tile,
 					translate_grid_coords_entities,
 					camera_update,
 				)
@@ -1317,7 +870,6 @@ fn main() {
 		.init_resource::<CursorPos>()
 		.init_resource::<PlayerEntityDestination>()
 		.init_resource::<TurnState>()
-		.add_event::<AnimationArrived>()
 		.add_event::<DeathEvent>()
 		.add_event::<AbilityEvent>()
 		.register_ldtk_entity::<PlayerBundle>("Player")

@@ -1,12 +1,21 @@
 //! Enemy functionality.
 
+use std::ops::DerefMut;
+use std::time::Duration;
+
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use bevy_ecs_ldtk::prelude::*;
+use bevy_ecs_ldtk::utils;
+use bevy_ecs_tilemap::map::TilemapSize;
+use bevy_tweening::lens::TransformPositionLens;
+use bevy_tweening::{Animator, EaseMethod, Tween};
+use pathfinding::prelude::astar;
 
-use super::{Health, Spellbook};
+use super::{AbilityEvent, Health, Player, Spellbook};
 use crate::animation::Animation;
-use crate::Drops;
+use crate::util::{self, flip_sprite, OrderedNeighbors};
+use crate::{Destination, Drops, GameState, LevelCache, TurnState, GRID_SIZE};
 
 /// Enemy marker component.
 #[derive(Default, Component)]
@@ -85,4 +94,117 @@ impl EnemyBundle {
 			))),
 		}
 	}
+}
+
+/// Moves enemies when its their turn.
+#[allow(
+	clippy::needless_pass_by_value,
+	clippy::type_complexity,
+	clippy::too_many_arguments
+)]
+pub(crate) fn move_enemies(
+	mut commands: Commands<'_, '_>,
+	mut game_state: ResMut<'_, GameState>,
+	mut level_cache: ResMut<'_, LevelCache>,
+	mut turn_state: ResMut<'_, TurnState>,
+	tile_map_size: Query<'_, '_, &TilemapSize>,
+	player: Query<'_, '_, (Entity, &GridCoords), (Without<Enemy>, With<Player>)>,
+	mut world_enemies: Query<
+		'_,
+		'_,
+		(
+			Entity,
+			&mut GridCoords,
+			&Transform,
+			&mut Sprite,
+			&Spellbook,
+			&mut TextureAtlas,
+			&mut Animation,
+		),
+		(With<Enemy>, Without<Player>),
+	>,
+	mut cast_ability: EventWriter<'_, AbilityEvent>,
+) {
+	let GameState { enemies, doors, .. } = game_state.deref_mut();
+
+	for (enemy, ready) in enemies.iter_mut().filter(|(_, ready)| *ready) {
+		*ready = false;
+
+		let tile_map_size = tile_map_size.single();
+		let (player_entity, player_pos) = player.single();
+		let (
+			enemy_entity,
+			mut enemy_pos,
+			enemy_transform,
+			mut enemy_sprite,
+			spellbook,
+			mut enemy_atlas,
+			mut enemy_animation,
+		) = world_enemies
+			.get_mut(*enemy)
+			.expect("enemy for its turn not found");
+
+		flip_sprite(*enemy_pos, *player_pos, &mut enemy_sprite);
+
+		let Some((path, _)) = astar(
+			enemy_pos.as_ref(),
+			|grid_pos| {
+				OrderedNeighbors::new((*grid_pos).into(), *tile_map_size)
+					.filter_map(|pos| {
+						let walkable = level_cache.destination(doors, *enemy_pos, pos.into());
+						matches!(walkable, Destination::Walkable).then_some((pos.into(), 1))
+					})
+					.collect::<Vec<_>>()
+			},
+			|start| {
+				#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+				let distance = util::euclidean_distance(*player_pos, *start) as i32;
+				distance
+			},
+			|current_pos| current_pos == player_pos,
+		) else {
+			continue;
+		};
+
+		let destination = path.get(1).expect("found empty path");
+
+		if destination == player_pos {
+			cast_ability.send(AbilityEvent::new(enemy_entity, player_entity, 0));
+			return;
+		}
+
+		let mut enemy_commands = commands.entity(enemy_entity);
+		enemy_commands.insert(Animator::new(
+			Tween::new(
+				EaseMethod::Linear,
+				Duration::from_millis(250),
+				TransformPositionLens {
+					start: enemy_transform.translation,
+					end:   utils::grid_coords_to_translation(*destination, IVec2::splat(GRID_SIZE))
+						.extend(enemy_transform.translation.z),
+				},
+			)
+			.with_completed_event(0),
+		));
+
+		*enemy_animation = EnemyBundle::walking_animation();
+		enemy_atlas.index = enemy_animation.first;
+
+		let enemy = level_cache
+			.enemies
+			.remove(enemy_pos.as_ref())
+			.expect("found no enemy at the moved position");
+		assert_eq!(enemy, enemy_entity, "wrong enemy found in level cache");
+		level_cache.enemies.insert(*destination, enemy);
+		*enemy_pos = *destination;
+
+		*turn_state = TurnState::EnemiesBusy;
+		return;
+	}
+
+	game_state
+		.enemies
+		.iter_mut()
+		.for_each(|(_, ready)| *ready = true);
+	*turn_state = TurnState::PlayerWaiting;
 }

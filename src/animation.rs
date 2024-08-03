@@ -1,14 +1,12 @@
 //! Animation system.
 
-use std::ops::DerefMut;
-
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use bevy_ecs_ldtk::prelude::*;
 use bevy_tweening::{Animator, TweenCompleted};
 
-use crate::gameplay::Player;
-use crate::{LevelCache, TurnState};
+use crate::gameplay::{Enemy, EnemyBundle, Player, PlayerBundle};
+use crate::{GameState, LevelCache, TurnState};
 
 /// Animated sprite.
 #[derive(Clone, Component)]
@@ -56,82 +54,52 @@ pub(crate) fn animate(
 	}
 }
 
-/// What should happen after an animation has completed.
-#[derive(Component)]
-pub(crate) struct AnimationFinish {
-	/// Tile animation has finished on.
-	pub arrived_event: Option<GridCoords>,
-	/// Switch to a new animation.
-	pub new_animation: Option<Animation>,
-	/// After player animation finishes we want to switch states.
-	pub next_state:    Option<TurnState>,
-}
-
 /// Remove [`Animator`] after completion and potentially transition to old animation.
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 pub(crate) fn finish_animation(
 	mut commands: Commands<'_, '_>,
+	mut state: ResMut<'_, GameState>,
+	mut turn_state: ResMut<'_, TurnState>,
+	mut level_cache: ResMut<'_, LevelCache>,
 	mut completed: EventReader<'_, '_, TweenCompleted>,
-	mut arrived: EventWriter<'_, AnimationArrived>,
 	mut query: Query<
 		'_,
 		'_,
-		(Entity, &AnimationFinish, &mut TextureAtlas, &mut Animation),
-		With<Animator<Transform>>,
+		(
+			&GridCoords,
+			&mut TextureAtlas,
+			&mut Animation,
+			Has<Player>,
+			Has<Enemy>,
+		),
 	>,
-	mut animation_state: ResMut<'_, TurnState>,
 ) {
 	for completed in completed.read() {
-		let mut command = commands.entity(completed.entity);
+		let (grid_coord, mut atlas, mut animation, has_player, has_enemy) =
+			query.get_mut(completed.entity).unwrap();
 
-		// Transition to old animation.
-		if let Ok((entity, finish, mut atlas, mut animation)) = query.get_mut(completed.entity) {
-			if let Some(new_animation) = &finish.new_animation {
-				*animation.deref_mut() = new_animation.clone();
-				atlas.index = animation.first;
-			}
+		// Transition to next state
+		*turn_state = TurnState::EnemiesWaiting;
 
-			if let Some(position) = finish.arrived_event {
-				arrived.send(AnimationArrived { entity, position });
-			}
-
-			if let Some(next_state) = finish.next_state {
-				*animation_state = next_state;
-			}
-
-			command.remove::<AnimationFinish>();
+		// Transition back to idle animation.
+		if has_player {
+			*animation = PlayerBundle::idle_animation();
+		} else if has_enemy {
+			*animation = EnemyBundle::idle_animation();
+		} else {
+			unreachable!("found unknown entity");
 		}
 
-		command.remove::<Animator<Transform>>();
-	}
-}
+		atlas.index = animation.first;
+		commands
+			.entity(completed.entity)
+			.remove::<Animator<Transform>>();
 
-/// Event fired when the animation has reached a tile or has been interrupted.
-#[derive(Event)]
-pub(crate) struct AnimationArrived {
-	/// Entity that arriveed.
-	entity:   Entity,
-	/// Arrived at which grid coordinates.
-	position: GridCoords,
-}
-
-// Used to despawn things when movement to a tile has finished.
-#[allow(clippy::needless_pass_by_value)]
-pub(crate) fn animation_arrived_tile(
-	mut commands: Commands<'_, '_>,
-	mut level_cache: ResMut<'_, LevelCache>,
-	mut arrived: EventReader<'_, '_, AnimationArrived>,
-	player: Query<'_, '_, Entity, With<Player>>,
-) {
-	if arrived.is_empty() {
-		return;
-	}
-
-	let player = player.single();
-
-	for arrived in arrived.read() {
-		if arrived.entity == player {
-			if let Some((entity, _)) = level_cache.keys.remove(&arrived.position) {
+		// Pick up items if it makes sense.
+		if has_player {
+			if let Some((entity, source)) = level_cache.keys.remove(grid_coord) {
+				*state.keys.get_mut(&source).unwrap() = true;
+				state.player_keys += 1;
 				commands.entity(entity).insert(Visibility::Hidden);
 			}
 		}

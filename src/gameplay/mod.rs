@@ -10,13 +10,15 @@ use bevy::color::palettes::css::RED;
 use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
 use bevy_ecs_ldtk::prelude::*;
-use bevy_egui::egui::emath::Numeric;
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
 
-pub(crate) use self::enemy::{Enemy, EnemyBundle};
-pub(crate) use self::player::{Player, PlayerBundle};
-use crate::animation::{Animation, AnimationFinish};
+pub(crate) use self::enemy::{move_enemies, Enemy, EnemyBundle};
+pub(crate) use self::player::{
+	cast_ability, door_interactions, player_movement, select_ability, Player, PlayerBundle,
+};
+use crate::animation::Animation;
+use crate::util::flip_sprite;
 use crate::{util, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, TurnState};
 
 /// Component for tracking health in entities.
@@ -207,29 +209,18 @@ pub(crate) fn handle_ability_event(
 			.get_mut(&ability_event.ability)
 			.expect("Entity has to have an active ability.");
 
-		let dx = target_grid_coord.x - caster_grid_coord.x;
-		let dy = target_grid_coord.y - caster_grid_coord.y;
-		let degrees = f64::atan2(dy.into(), dx.into()).to_degrees();
+		flip_sprite(*caster_grid_coord, *target_grid_coord, &mut sprite);
 
-		#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-		match degrees.round() as i16 {
-			-89..90 => sprite.flip_x = false,
-			-180..-90 | 91..=180 => sprite.flip_x = true,
-			-90 | 90 => (),
-			angle => unreachable!("invalid angle found: {}", angle),
-		}
-
-		if attack.last_cast.is_none() && {
-			let distance = (dx.pow(2) + dy.pow(2)).to_f64().sqrt();
-			distance.floor() <= attack.range.into()
-		} {
+		if attack.last_cast.is_none()
+			&& attack.in_euclidean_range(*caster_grid_coord, *target_grid_coord)
+		{
 			if player.is_some() {
 				state.turn += 1;
 				*animation_state = TurnState::PlayerBusy(PlayerBusy::Attacking);
 			} else if enemy.is_some() {
 				*animation_state = TurnState::EnemiesBusy;
 			} else {
-				panic!("entity has to be enemy or player");
+				unreachable!("entity has to be enemy or player");
 			}
 
 			health.current = health.current.saturating_sub(attack.power);
@@ -238,34 +229,27 @@ pub(crate) fn handle_ability_event(
 					.normalize() * 5.)
 					.extend(caster_transform.translation.z);
 
-			commands.entity(caster_entity).insert((
-				Animator::new(
+			commands.entity(caster_entity).insert((Animator::new(
+				Tween::new(
+					EaseMethod::Linear,
+					Duration::from_secs_f64(0.1),
+					TransformPositionLens {
+						start: caster_transform.translation,
+						end:   target,
+					},
+				)
+				.then(
 					Tween::new(
 						EaseMethod::Linear,
 						Duration::from_secs_f64(0.1),
 						TransformPositionLens {
-							start: caster_transform.translation,
-							end:   target,
+							start: target,
+							end:   caster_transform.translation,
 						},
 					)
-					.then(
-						Tween::new(
-							EaseMethod::Linear,
-							Duration::from_secs_f64(0.1),
-							TransformPositionLens {
-								start: target,
-								end:   caster_transform.translation,
-							},
-						)
-						.with_completed_event(0),
-					),
+					.with_completed_event(0),
 				),
-				AnimationFinish {
-					arrived_event: None,
-					new_animation: None,
-					next_state:    Some(TurnState::EnemiesWaiting),
-				},
-			));
+			),));
 
 			if attack.cooldown.is_some() {
 				attack.last_cast = Some(state.turn);
@@ -395,7 +379,7 @@ pub(crate) fn death(
 		} else if player {
 			unimplemented!()
 		} else {
-			panic!("Player can't be enemy and visa versa.")
+			unreachable!("player can't be enemy and visa versa")
 		};
 
 		transform.translation.z -= 0.1;
