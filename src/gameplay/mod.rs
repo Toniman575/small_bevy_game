@@ -16,7 +16,6 @@ use bevy_tweening::{Animator, EaseMethod, Tween};
 
 pub(crate) use self::enemy::{Enemy, EnemyBundle};
 pub(crate) use self::player::{Player, PlayerBundle};
-
 use crate::animation::{Animation, AnimationFinish};
 use crate::{util, Drops, GameState, ItemSource, Key, LevelCache, TurnState};
 
@@ -236,7 +235,7 @@ pub(crate) fn handle_ability_event(
 			health.current = health.current.saturating_sub(attack.power);
 			let target = caster_transform.translation
 				+ ((target_transform.translation.xy() - caster_transform.translation.xy())
-					.normalize() * 2.)
+					.normalize() * 5.)
 					.extend(caster_transform.translation.z);
 
 			commands.entity(caster_entity).insert((

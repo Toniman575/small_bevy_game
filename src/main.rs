@@ -66,6 +66,7 @@ use gameplay::{
 	death, handle_ability_event, spawn_healthbar, tick_cooldowns, update_healthbar, AbilityEvent,
 	ActiveAbility, DeathEvent, Enemy, EnemyBundle, Health, Player, PlayerBundle, Spellbook,
 };
+use helpers::square_grid::neighbors::SquareDirection;
 use pathfinding::prelude::astar;
 
 use self::animation::{Animation, AnimationArrived, AnimationFinish};
@@ -1136,18 +1137,31 @@ fn move_enemies(
 		let Some((path, _)) = astar(
 			enemy_pos.as_ref(),
 			|grid_pos| {
-				Neighbors::get_square_neighboring_positions(
+				/// We want cardinal directions first.
+				const DIRECTIONS: [SquareDirection; 8] = [
+					SquareDirection::East,
+					SquareDirection::North,
+					SquareDirection::West,
+					SquareDirection::South,
+					SquareDirection::NorthEast,
+					SquareDirection::NorthWest,
+					SquareDirection::SouthWest,
+					SquareDirection::SouthEast,
+				];
+				let neighbors = Neighbors::get_square_neighboring_positions(
 					&TilePos::from(*grid_pos),
 					tile_map_size,
 					true,
-				)
-				.iter()
-				.filter_map(|pos| {
-					let destination = GridCoords::from(*pos);
-					let walkable = level_cache.destination(None, *enemy_pos, destination);
-					matches!(walkable, Destination::Walkable).then_some((destination, 1))
-				})
-				.collect::<Vec<_>>()
+				);
+				DIRECTIONS
+					.into_iter()
+					.filter_map(|direction| neighbors.get(direction))
+					.filter_map(|pos| {
+						let destination = GridCoords::from(*pos);
+						let walkable = level_cache.destination(None, *enemy_pos, destination);
+						matches!(walkable, Destination::Walkable).then_some((destination, 1))
+					})
+					.collect::<Vec<_>>()
 			},
 			|start| {
 				#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
