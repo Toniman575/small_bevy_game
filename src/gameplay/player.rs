@@ -40,7 +40,7 @@ impl Default for PlayerBundle {
 		Self {
 			player:              Player,
 			health:              Health::default(),
-			abilities:           Spellbook::default(),
+			abilities:           Spellbook::default_player(),
 			active_ability:      ActiveAbility::default(),
 			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),

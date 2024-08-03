@@ -563,7 +563,13 @@ fn update_cursor_pos(
 fn cast_ability(
 	mut inputs: EventReader<'_, '_, MouseButtonInput>,
 	mut abilities: EventWriter<'_, AbilityEvent>,
+	player: Query<'_, '_, (Entity, &ActiveAbility), With<Player>>,
+	targeting_marker: Query<'_, '_, &TargetingMarker>,
 ) {
+	let Some(target_entity) = targeting_marker.single().0 else {
+		return;
+	};
+
 	for input in inputs.read() {
 		let MouseButtonInput {
 			state: ButtonState::Pressed,
@@ -574,7 +580,10 @@ fn cast_ability(
 			continue;
 		};
 
-		abilities.send(AbilityEvent(None));
+		let (player_entity, ability) = player.single();
+
+		abilities.send(AbilityEvent::new(player_entity, target_entity, ability.0));
+
 		return;
 	}
 }
@@ -699,13 +708,13 @@ fn door_interactions(
 	}
 }
 
-/// Character movement.
+/// Player movement.
 #[allow(
 	clippy::needless_pass_by_value,
 	clippy::too_many_arguments,
 	clippy::type_complexity
 )]
-fn movement(
+fn player_movement(
 	mut state: ResMut<'_, GameState>,
 	mut commands: Commands<'_, '_>,
 	mut inputs: EventReader<'_, '_, KeyboardInput>,
@@ -715,6 +724,7 @@ fn movement(
 		'_,
 		(
 			Entity,
+			&ActiveAbility,
 			&Transform,
 			&mut GridCoords,
 			&mut Sprite,
@@ -762,8 +772,15 @@ fn movement(
 
 		*buffered_movement = None;
 
-		let (player_entity, transform, mut grid_pos, mut sprite, mut atlas, mut animation) =
-			player.single_mut();
+		let (
+			player_entity,
+			active_ability,
+			transform,
+			mut grid_pos,
+			mut sprite,
+			mut atlas,
+			mut animation,
+		) = player.single_mut();
 		let destination = *grid_pos + direction;
 
 		match level_cache.destination(Some(state.deref()), *grid_pos, destination) {
@@ -802,6 +819,7 @@ fn movement(
 				player.insert(AnimationFinish {
 					arrived_event,
 					new_animation: Some(PlayerBundle::idle_animation()),
+					next_state: Some(TurnState::EnemiesWaiting),
 				});
 
 				*grid_pos = destination;
@@ -812,9 +830,11 @@ fn movement(
 			}
 			Destination::Wall => (),
 			Destination::Enemy => {
-				cast_ability.send(AbilityEvent(Some(
+				cast_ability.send(AbilityEvent::new(
+					player_entity,
 					*level_cache.enemies.get(&destination).unwrap(),
-				)));
+					active_ability.0,
+				));
 			}
 			Destination::Door(door) => {
 				if let LevelSelection::Iid(current_level) = level_selection.as_mut() {
@@ -1056,14 +1076,18 @@ fn select_ability(
 }
 
 /// Moves enemies when its their turn.
-#[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
+#[allow(
+	clippy::needless_pass_by_value,
+	clippy::type_complexity,
+	clippy::too_many_arguments
+)]
 fn move_enemies(
 	mut commands: Commands<'_, '_>,
 	mut game_state: ResMut<'_, GameState>,
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut turn_state: ResMut<'_, TurnState>,
 	tile_map_size: Query<'_, '_, &TilemapSize>,
-	player: Query<'_, '_, &GridCoords, (Without<Enemy>, With<Player>)>,
+	player: Query<'_, '_, (Entity, &GridCoords), (Without<Enemy>, With<Player>)>,
 	mut enemies: Query<
 		'_,
 		'_,
@@ -1072,27 +1096,30 @@ fn move_enemies(
 			&mut GridCoords,
 			&Transform,
 			&mut Sprite,
+			&Spellbook,
 			&mut TextureAtlas,
 			&mut Animation,
 		),
 		(With<Enemy>, Without<Player>),
 	>,
+	mut cast_ability: EventWriter<'_, AbilityEvent>,
 ) {
 	for (enemy, ready) in game_state.enemies.iter_mut().filter(|(_, ready)| *ready) {
 		*ready = false;
 
 		let tile_map_size = tile_map_size.single();
-		let player_pos = player.single();
+		let (player_entity, player_pos) = player.single();
 		let (
 			enemy_entity,
 			mut enemy_pos,
 			enemy_transform,
 			mut enemy_sprite,
+			spellbook,
 			mut enemy_atlas,
 			mut enemy_animation,
 		) = enemies
 			.get_mut(*enemy)
-			.expect("enemey for its turn not found");
+			.expect("enemy for its turn not found");
 
 		let dx = player_pos.x - enemy_pos.x;
 		let dy = player_pos.y - enemy_pos.y;
@@ -1134,6 +1161,11 @@ fn move_enemies(
 
 		let destination = path.get(1).expect("found empty path");
 
+		if destination == player_pos {
+			cast_ability.send(AbilityEvent::new(enemy_entity, player_entity, 0));
+			return;
+		}
+
 		let mut enemy_commands = commands.entity(enemy_entity);
 		enemy_commands.insert(Animator::new(
 			Tween::new(
@@ -1154,6 +1186,7 @@ fn move_enemies(
 		enemy_commands.insert(AnimationFinish {
 			arrived_event: None,
 			new_animation: Some(EnemyBundle::idle_animation()),
+			next_state:    Some(TurnState::EnemiesWaiting),
 		});
 
 		let enemy = level_cache
@@ -1196,7 +1229,7 @@ fn main() {
 		.add_systems(
 			Update,
 			(
-				movement,
+				player_movement,
 				move_enemies.run_if(|debug: Res<'_, TurnState>| {
 					matches!(debug.deref(), TurnState::EnemiesWaiting)
 				}),

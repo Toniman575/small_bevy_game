@@ -63,6 +63,8 @@ pub(crate) struct AnimationFinish {
 	pub arrived_event: Option<GridCoords>,
 	/// Switch to a new animation.
 	pub new_animation: Option<Animation>,
+	/// After player animation finishes we want to switch states.
+	pub next_state:    Option<TurnState>,
 }
 
 /// Remove [`Animator`] after completion and potentially transition to old animation.
@@ -81,7 +83,6 @@ pub(crate) fn finish_animation(
 ) {
 	for completed in completed.read() {
 		let mut command = commands.entity(completed.entity);
-		*animation_state = TurnState::EnemiesWaiting;
 
 		// Transition to old animation.
 		if let Ok((entity, finish, mut atlas, mut animation)) = query.get_mut(completed.entity) {
@@ -92,6 +93,10 @@ pub(crate) fn finish_animation(
 
 			if let Some(position) = finish.arrived_event {
 				arrived.send(AnimationArrived { entity, position });
+			}
+
+			if let Some(next_state) = finish.next_state {
+				*animation_state = next_state;
 			}
 
 			command.remove::<AnimationFinish>();

@@ -16,8 +16,9 @@ use bevy_tweening::{Animator, EaseMethod, Tween};
 
 pub(crate) use self::enemy::{Enemy, EnemyBundle};
 pub(crate) use self::player::{Player, PlayerBundle};
-use crate::animation::Animation;
-use crate::{util, Drops, GameState, ItemSource, Key, LevelCache, TargetingMarker, TurnState};
+
+use crate::animation::{Animation, AnimationFinish};
+use crate::{util, Drops, GameState, ItemSource, Key, LevelCache, TurnState};
 
 /// Component for tracking health in entities.
 #[derive(Clone, Component, Debug, Default, Reflect, PartialEq, Eq, Copy)]
@@ -52,10 +53,27 @@ pub(crate) struct HealthBar;
 #[derive(Event)]
 pub(crate) struct DeathEvent(Entity);
 
-/// Event that fires when a player uses an ability. If not sent through a mouseclick we need to
-/// specifify which entity is the target.
+/// Event that fires when an entity uses an ability.
 #[derive(Event)]
-pub(crate) struct AbilityEvent(pub(crate) Option<Entity>);
+pub(crate) struct AbilityEvent {
+	/// The entity casting the ability.
+	pub(crate) caster_entity: Entity,
+	/// The target entity of the ability.
+	pub(crate) target_entity: Entity,
+	/// The ability being cast.
+	pub(crate) ability:       u64,
+}
+
+impl AbilityEvent {
+	/// Creates an abilityevent.
+	pub(crate) const fn new(caster_entity: Entity, target_entity: Entity, ability: u64) -> Self {
+		Self {
+			caster_entity,
+			target_entity,
+			ability,
+		}
+	}
+}
 
 /// An ability an entity can perform.
 #[derive(Reflect, Default)]
@@ -122,13 +140,22 @@ impl Ability {
 #[derive(Reflect, Component)]
 pub(crate) struct Spellbook(pub(crate) BTreeMap<u64, Ability>);
 
-impl Default for Spellbook {
-	fn default() -> Self {
+impl Spellbook {
+	/// Default spellbook for player.
+	fn default_player() -> Self {
 		Self(BTreeMap::from([
 			(0, Ability::new(0, String::from("Autoattack"), 1, 5, None)),
 			(1, Ability::new(1, String::from("Ranged"), 5, 2, None)),
 			(2, Ability::new(2, String::from("Hardcore"), 1, 10, Some(3))),
 		]))
+	}
+
+	/// Default spellbook for enemies.
+	fn default_enemy() -> Self {
+		Self(BTreeMap::from([(
+			0,
+			Ability::new(0, String::from("Autoattack"), 1, 3, None),
+		)]))
 	}
 }
 
@@ -136,62 +163,53 @@ impl Default for Spellbook {
 #[derive(Reflect, Component, Default)]
 pub(crate) struct ActiveAbility(pub(crate) u64);
 
-/// Handles when a player wants to cast an ability.
+/// Handles when an entity wants to cast an ability.
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 pub(crate) fn handle_ability_event(
 	mut commands: Commands<'_, '_>,
 	mut state: ResMut<'_, GameState>,
-	mut player: Query<
+	mut casters: Query<
 		'_,
 		'_,
 		(
 			Entity,
 			&Transform,
-			&ActiveAbility,
 			&GridCoords,
 			&mut Spellbook,
 			&mut Sprite,
+			Option<&Player>,
+			Option<&Enemy>,
 		),
-		(With<Player>, Without<Enemy>),
 	>,
-	target_marker: Query<'_, '_, &TargetingMarker>,
-	mut enemies: Query<
-		'_,
-		'_,
-		(&Transform, &GridCoords, &mut Health),
-		(With<Enemy>, Without<Player>),
-	>,
+	mut targets: Query<'_, '_, (&Transform, &GridCoords, &mut Health)>,
 	mut abilities: EventReader<'_, '_, AbilityEvent>,
 	mut animation_state: ResMut<'_, TurnState>,
 ) {
-	let target_marker = target_marker.single();
+	for ability_event in abilities.read() {
+		let (target_transform, target_grid_coord, mut health) = targets
+			.get_mut(ability_event.target_entity)
+			.expect("did not find entity supplied by event");
 
-	for ability in abilities.read() {
-		// Attack either a explicit ability target or the target at the cursor.
-		let Some(entity) = ability.0.or(target_marker.0) else {
+		let Ok((
+			caster_entity,
+			caster_transform,
+			caster_grid_coord,
+			mut spellbook,
+			mut sprite,
+			player,
+			enemy,
+		)) = casters.get_mut(ability_event.caster_entity)
+		else {
 			continue;
 		};
 
-		let (enemy_transform, enemy_grid_coord, mut health) = enemies
-			.get_mut(entity)
-			.expect("found no enemy at the specified position");
-
-		let (
-			player_entity,
-			player_transform,
-			active_ability,
-			player_grid_coord,
-			mut spellbook,
-			mut sprite,
-		) = player.single_mut();
-
 		let attack = spellbook
 			.0
-			.get_mut(&active_ability.0)
-			.expect("Player has to have an active ability.");
+			.get_mut(&ability_event.ability)
+			.expect("Entity has to have an active ability.");
 
-		let dx = enemy_grid_coord.x - player_grid_coord.x;
-		let dy = enemy_grid_coord.y - player_grid_coord.y;
+		let dx = target_grid_coord.x - caster_grid_coord.x;
+		let dy = target_grid_coord.y - caster_grid_coord.y;
 		let degrees = f64::atan2(dy.into(), dx.into()).to_degrees();
 
 		#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
@@ -206,34 +224,48 @@ pub(crate) fn handle_ability_event(
 			let distance = (dx.pow(2) + dy.pow(2)).to_f64().sqrt();
 			distance.floor() <= attack.range.into()
 		} {
-			*animation_state = TurnState::Running;
-			state.turn += 1;
-			health.current = health.current.saturating_sub(attack.power);
-			let target = player_transform.translation
-				+ (enemy_transform.translation.xy() - player_transform.translation.xy())
-					.normalize()
-					.extend(player_transform.translation.z);
+			if player.is_some() {
+				state.turn += 1;
+				*animation_state = TurnState::Running;
+			} else if enemy.is_some() {
+				*animation_state = TurnState::EnemiesRunning;
+			} else {
+				panic!("entity has to be enemy or player");
+			}
 
-			commands.entity(player_entity).insert(Animator::new(
-				Tween::new(
-					EaseMethod::Linear,
-					Duration::from_secs_f64(0.1),
-					TransformPositionLens {
-						start: player_transform.translation,
-						end:   target,
-					},
-				)
-				.then(
+			health.current = health.current.saturating_sub(attack.power);
+			let target = caster_transform.translation
+				+ ((target_transform.translation.xy() - caster_transform.translation.xy())
+					.normalize() * 2.)
+					.extend(caster_transform.translation.z);
+
+			commands.entity(caster_entity).insert((
+				Animator::new(
 					Tween::new(
 						EaseMethod::Linear,
 						Duration::from_secs_f64(0.1),
 						TransformPositionLens {
-							start: target,
-							end:   player_transform.translation,
+							start: caster_transform.translation,
+							end:   target,
 						},
 					)
-					.with_completed_event(0),
+					.then(
+						Tween::new(
+							EaseMethod::Linear,
+							Duration::from_secs_f64(0.1),
+							TransformPositionLens {
+								start: target,
+								end:   caster_transform.translation,
+							},
+						)
+						.with_completed_event(0),
+					),
 				),
+				AnimationFinish {
+					arrived_event: None,
+					new_animation: None,
+					next_state:    Some(TurnState::EnemiesWaiting),
+				},
 			));
 
 			if attack.cooldown.is_some() {

@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use bevy_ecs_ldtk::prelude::*;
 
-use super::Health;
+use super::{Health, Spellbook};
 use crate::animation::Animation;
 use crate::Drops;
 
@@ -15,18 +15,20 @@ pub(crate) struct Enemy;
 /// Enemy bundle.
 #[derive(Bundle, LdtkEntity)]
 pub(crate) struct EnemyBundle {
-	/// Player marker component.
+	/// enemy marker component.
 	enemy:               Enemy,
 	/// Health of the enemy.
 	#[from_entity_instance]
 	health:              Health,
+	/// Abilities the enemy can perform.
+	abilities:           Spellbook,
 	#[from_entity_instance]
 	/// A list of items this enemy drops on death.
 	drops:               Drops,
 	/// Sprite bundle.
 	#[sprite_sheet_bundle]
 	sprite_sheet_bundle: LdtkSpriteSheetBundle,
-	/// Player grid coordinates.
+	/// enemy grid coordinates.
 	#[grid_coords]
 	grid_coords:         GridCoords,
 	/// Animation.
@@ -38,6 +40,7 @@ impl Default for EnemyBundle {
 		Self {
 			enemy:               Enemy,
 			health:              Health::default(),
+			abilities:           Spellbook::default_enemy(),
 			drops:               Drops::default(),
 			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
