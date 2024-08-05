@@ -227,6 +227,7 @@ pub(crate) fn player_movement(
 pub(crate) fn door_interactions(
 	mut commands: Commands<'_, '_>,
 	mut state: ResMut<'_, GameState>,
+	mut animation_state: ResMut<'_, TurnState>,
 	level_cache: Res<'_, LevelCache>,
 	tile_map_size: Query<'_, '_, &TilemapSize>,
 	player: Query<'_, '_, &GridCoords, With<Player>>,
@@ -267,6 +268,7 @@ pub(crate) fn door_interactions(
 
 				if !*open && *player_keys > 0 {
 					*turn += 1;
+					*animation_state = TurnState::EnemiesWaiting;
 
 					*open = true;
 					*player_keys -= 1;

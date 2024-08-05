@@ -833,9 +833,8 @@ fn main() {
 					matches!(debug.deref(), TurnState::EnemiesWaiting)
 				}),
 				select_ability,
-				door_interactions,
 				spawn_healthbar,
-				cast_ability.run_if(|debug: Res<'_, TurnState>| {
+				(door_interactions, cast_ability).run_if(|debug: Res<'_, TurnState>| {
 					matches!(debug.deref(), TurnState::PlayerWaiting)
 				}),
 				(handle_ability_event, update_healthbar, death).chain(),
