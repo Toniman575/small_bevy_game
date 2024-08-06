@@ -3,13 +3,15 @@
 mod enemy;
 mod player;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
 use bevy::color::palettes::css::RED;
 use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
+use bevy::utils::HashSet;
 use bevy_ecs_ldtk::prelude::*;
+use bevy_ecs_tilemap::map::TilemapSize;
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
 
@@ -18,7 +20,7 @@ pub(crate) use self::player::{
 	cast_ability, door_interactions, player_movement, select_ability, Player, PlayerBundle,
 };
 use crate::animation::Animation;
-use crate::util::flip_sprite;
+use crate::util::{flip_sprite, OrderedNeighbors};
 use crate::{util, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, TurnState};
 
 /// Component for tracking health in entities.
@@ -115,7 +117,7 @@ impl Ability {
 
 	/// Checks if ability is in euclidian range.
 	pub(crate) fn in_euclidean_range(&self, origin: GridCoords, target: GridCoords) -> bool {
-		let distance = util::euclidean_distance(target, origin);
+		let distance = util::euclidean_distance_raw(target, origin);
 
 		distance.floor() <= self.range.into()
 	}
@@ -308,7 +310,7 @@ pub(crate) fn update_healthbar(
 
 				if enemy.is_some() {
 					if percentage < 1. {
-						visibility.set_if_neq(Visibility::Visible);
+						visibility.set_if_neq(Visibility::Inherited);
 					} else {
 						visibility.set_if_neq(Visibility::Hidden);
 					}
@@ -336,7 +338,12 @@ pub(crate) fn tick_cooldowns(
 }
 
 /// Handle when a death event was sent.
-#[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
+#[allow(
+	clippy::needless_pass_by_value,
+	clippy::too_many_arguments,
+	clippy::too_many_lines,
+	clippy::type_complexity
+)]
 pub(crate) fn death(
 	mut commands: Commands<'_, '_>,
 	asset_server: Res<'_, AssetServer>,
@@ -356,10 +363,17 @@ pub(crate) fn death(
 			Has<Player>,
 		),
 	>,
+	tile_map_size: Query<'_, '_, &TilemapSize>,
 	layers: Query<'_, '_, (Entity, &LayerMetadata)>,
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut game_state: ResMut<'_, GameState>,
 ) {
+	if deaths.is_empty() {
+		return;
+	}
+
+	let tile_map_size = tile_map_size.single();
+
 	for event in deaths.read() {
 		let (
 			entity,
@@ -397,12 +411,49 @@ pub(crate) fn death(
 		for drop in drops.0.drain(..) {
 			match drop.as_str() {
 				"Key" => {
+					// This has been dropped and picked up before. So don't drop it again!
 					if *game_state
 						.keys
 						.get(&ItemSource::Loot(entity_iid.clone()))
 						.unwrap()
 					{
 						continue;
+					}
+
+					#[allow(clippy::shadow_same)]
+					let mut grid_coords = *grid_coords;
+
+					if level_cache.keys.get(&grid_coords).is_some() {
+						let mut checked = HashSet::new();
+						let mut next = VecDeque::new();
+						checked.insert(grid_coords);
+						next.push_back(grid_coords);
+
+						'outer: loop {
+							let Some(new_grid_coords) = next.pop_front() else {
+								panic!("no empty floor found to dop items")
+							};
+
+							for new_grid_coords in
+								OrderedNeighbors::new(new_grid_coords.into(), *tile_map_size)
+									.map(GridCoords::from)
+							{
+								if !checked.insert(new_grid_coords) {
+									continue;
+								}
+
+								if level_cache.walls.get(&new_grid_coords).is_some() {
+									continue;
+								}
+
+								if level_cache.keys.get(&new_grid_coords).is_none() {
+									grid_coords = new_grid_coords;
+									break 'outer;
+								}
+
+								next.push_back(new_grid_coords);
+							}
+						}
 					}
 
 					let key_texture =
@@ -412,7 +463,7 @@ pub(crate) fn death(
 						.spawn((
 							Name::new("Key"),
 							Key,
-							*grid_coords,
+							grid_coords,
 							SpriteBundle {
 								sprite: Sprite {
 									custom_size: Some(Vec2::new(16., 16.)),
@@ -420,6 +471,11 @@ pub(crate) fn death(
 									..Sprite::default()
 								},
 								texture: key_texture,
+								visibility: if level_cache.visible_tiles.contains(&grid_coords) {
+									Visibility::default()
+								} else {
+									Visibility::Hidden
+								},
 								..SpriteBundle::default()
 							},
 						))
@@ -439,7 +495,7 @@ pub(crate) fn death(
 					assert!(
 						level_cache
 							.keys
-							.insert(*grid_coords, (entity, ItemSource::Loot(entity_iid.clone())))
+							.insert(grid_coords, (entity, ItemSource::Loot(entity_iid.clone())))
 							.is_none(),
 						"found key at this position already",
 					);

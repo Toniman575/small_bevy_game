@@ -8,12 +8,22 @@ use bevy_ecs_tilemap::helpers::square_grid::neighbors::{Neighbors, SquareDirecti
 use bevy_ecs_tilemap::map::TilemapSize;
 use bevy_ecs_tilemap::tiles::TilePos;
 use bevy_egui::egui::emath::Numeric;
+use num_traits::ToPrimitive;
 
-/// Calculates euclidian distance.
-pub(crate) fn euclidean_distance(target: GridCoords, origin: GridCoords) -> f64 {
+/// Calculates euclidian distance rounded to a [`i32`].
+pub(crate) fn euclidean_distance(target: GridCoords, origin: GridCoords) -> i32 {
+	euclidean_distance_raw(target, origin)
+		.round()
+		.to_i32()
+		.unwrap()
+}
+
+/// Calculates euclidian distance and returns it as a [`f64`].
+pub(crate) fn euclidean_distance_raw(target: GridCoords, origin: GridCoords) -> f64 {
 	((target.x - origin.x).pow(2) + (target.y - origin.y).pow(2))
 		.to_f64()
 		.sqrt()
+		.round()
 }
 
 /// Calculates manhatten distance.
@@ -53,14 +63,14 @@ impl OrderedNeighbors {
 	pub(crate) fn new(tile_pos: TilePos, map_size: TilemapSize) -> Self {
 		/// We want cardinal directions first.
 		const DIRECTIONS: [SquareDirection; 8] = [
-			SquareDirection::East,
 			SquareDirection::North,
-			SquareDirection::West,
+			SquareDirection::East,
 			SquareDirection::South,
+			SquareDirection::West,
 			SquareDirection::NorthEast,
-			SquareDirection::NorthWest,
-			SquareDirection::SouthWest,
 			SquareDirection::SouthEast,
+			SquareDirection::SouthWest,
+			SquareDirection::NorthWest,
 		];
 
 		let neighbors = Neighbors::get_square_neighboring_positions(&tile_pos, &map_size, true);

@@ -1,12 +1,15 @@
 //! Animation system.
 
+use std::ops::Deref;
+
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use bevy_ecs_ldtk::prelude::*;
+use bevy_ecs_ldtk::utils;
 use bevy_tweening::{Animator, TweenCompleted};
 
 use crate::gameplay::{Enemy, EnemyBundle, Player, PlayerBundle};
-use crate::{GameState, LevelCache, TurnState};
+use crate::{GameState, LevelCache, TurnState, GRID_SIZE};
 
 /// Animated sprite.
 #[derive(Clone, Component)]
@@ -66,17 +69,29 @@ pub(crate) fn finish_animation(
 		'_,
 		'_,
 		(
-			&GridCoords,
+			&Transform,
+			&mut GridCoords,
 			&mut TextureAtlas,
 			&mut Animation,
+			&mut Visibility,
 			Has<Player>,
 			Has<Enemy>,
 		),
 	>,
 ) {
 	for completed in completed.read() {
-		let (grid_coord, mut atlas, mut animation, has_player, has_enemy) =
-			query.get_mut(completed.entity).unwrap();
+		let (
+			transform,
+			mut grid_coord,
+			mut atlas,
+			mut animation,
+			mut visibility,
+			has_player,
+			has_enemy,
+		) = query.get_mut(completed.entity).unwrap();
+
+		*grid_coord =
+			utils::translation_to_grid_coords(transform.translation.xy(), IVec2::splat(GRID_SIZE));
 
 		// Transition to next state
 		*turn_state = TurnState::EnemiesWaiting;
@@ -97,11 +112,16 @@ pub(crate) fn finish_animation(
 
 		// Pick up items if it makes sense.
 		if has_player {
-			if let Some((entity, source)) = level_cache.keys.remove(grid_coord) {
+			if let Some((entity, source)) = level_cache.keys.remove(grid_coord.deref()) {
 				*state.keys.get_mut(&source).unwrap() = true;
 				state.player_keys += 1;
 				commands.entity(entity).insert(Visibility::Hidden);
 			}
+		}
+
+		// Hide enemy if it makes sense.
+		if has_enemy && !level_cache.visible_tiles.contains(&grid_coord) {
+			visibility.set_if_neq(Visibility::Hidden);
 		}
 	}
 }

@@ -717,7 +717,10 @@
 							"px": [184,120],
 							"fieldInstances": [
 								{ "__identifier": "Health", "__type": "Int", "__value": 50, "__tile": null, "defUid": 94, "realEditorValues": [] },
-								{ "__identifier": "Drops", "__type": "Array<String>", "__value": [], "__tile": null, "defUid": 96, "realEditorValues": [] }
+								{ "__identifier": "Drops", "__type": "Array<String>", "__value": ["Key"], "__tile": null, "defUid": 96, "realEditorValues": [{
+									"id": "V_String",
+									"params": ["Key"]
+								}] }
 							],
 							"__worldX": 184,
 							"__worldY": 376

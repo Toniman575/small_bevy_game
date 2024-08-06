@@ -2,25 +2,25 @@
 //! - Refactor Code
 //!   - Replace animation code with <https://github.com/merwaaan/bevy_spritesheet_animation>.
 //!   - Replace egui with <https://github.com/UmbraLuminosa/sickle_ui> maybe?
-//! - Improve combat
-//! - Design turn system
-//!   - Drop items in neighbouring tiles if full.
 //! - Line of sight
-//!   - FoW for player.
+//!   - Add "memory" to the fow.
 //!   - When player goes out of LoS enemies go to last known position and "wait" before returning to
 //!     their spawn point.
 //! - Abilities
 //!   - Implement tooltip.
 //!   - Make sure its easy to add new abilities.
+//!   - Make enemies use abilities.
 //! - Debuffs
 //!   - Implement bleeding debuff on enemies, think about presentation.
 //!   - Make sure its easy to integrate with abilities and add new ones.
+//! - Bonus
+//!   - Delete `LevelCache`.
+//!   - Let players speed up turns (turn off animations, speed them up etc.).
 //!
 //! Not important:
 //! - Show all levels in debug mode.
 //!
 //! Bugs:
-//! - Cursor indicator show up incorrectly when outside the level in the south or west.
 //! - Sometimes levels are not despawned correctly, leading to false walls and doors being cached.
 //! - Fully loaded levels, before cleanup, can sometimes be seen for a single frame.
 
@@ -31,6 +31,7 @@
 )]
 
 mod animation;
+mod fow;
 mod gameplay;
 mod util;
 
@@ -56,6 +57,7 @@ use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
 	SidePanel, Stroke, Widget,
 };
+use fow::generate_fov;
 use gameplay::{cast_ability, door_interactions, move_enemies, player_movement, select_ability};
 
 use self::gameplay::{
@@ -196,17 +198,19 @@ struct DoorBundle {
 #[reflect(Resource)]
 struct LevelCache {
 	/// The cashed walls of this level.
-	walls:   HashSet<GridCoords>,
+	walls:         HashSet<GridCoords>,
 	/// The cashed doors of this level.
-	doors:   HashMap<GridCoords, (Entity, EntityIid, Door)>,
+	doors:         HashMap<GridCoords, (Entity, EntityIid, Door)>,
 	/// The cashed enemies of this level.
-	enemies: HashMap<GridCoords, Entity>,
+	enemies:       HashMap<GridCoords, Entity>,
 	/// The cashed keys of this level.
-	keys:    HashMap<GridCoords, (Entity, ItemSource)>,
+	keys:          HashMap<GridCoords, (Entity, ItemSource)>,
 	/// The level width in tiles.
-	width:   i32,
+	width:         i32,
 	/// The level height in tiles.
-	height:  i32,
+	height:        i32,
+	/// Tiles currently visible by the player.
+	visible_tiles: Vec<GridCoords>,
 }
 
 /// Source of item could be LDTK level or drop from enemy.
@@ -399,12 +403,13 @@ fn level_spawn(
 
 	// ... so we can update the [`LevelCache`] resource.
 	*level_cache = LevelCache {
-		walls:   walls.iter().copied().collect(),
-		enemies: enemies_map,
-		keys:    keys_map,
-		doors:   doors_map,
-		width:   level.px_wid / GRID_SIZE,
-		height:  level.px_hei / GRID_SIZE,
+		walls:         walls.iter().copied().collect(),
+		enemies:       enemies_map,
+		keys:          keys_map,
+		doors:         doors_map,
+		width:         level.px_wid / GRID_SIZE,
+		height:        level.px_hei / GRID_SIZE,
+		visible_tiles: Vec::new(),
 	};
 
 	// We need to update the players grid coords on level changes to the correct "entrance".
@@ -603,11 +608,13 @@ fn update_target_marker(
 		return;
 	};
 
-	if level_cache.outside_boundary(cursor_pos.tile_pos) {
+	if level_cache.outside_boundary(cursor_pos.tile_pos)
+		|| !level_cache.visible_tiles.contains(&cursor_pos.tile_pos)
+	{
 		*visibility = Visibility::Hidden;
 		marker.set_if_neq(TargetingMarker(None));
 	} else {
-		visibility.set_if_neq(Visibility::Visible);
+		visibility.set_if_neq(Visibility::Inherited);
 		grid_coords.set_if_neq(cursor_pos.tile_pos);
 
 		if let Some(entity) = level_cache.enemies.get(grid_coords.deref()) {
@@ -824,7 +831,7 @@ fn main() {
 		.insert_resource(Msaa::Off)
 		.add_systems(Startup, startup)
 		.add_systems(First, level_spawn)
-		.add_systems(PreUpdate, (fix_sprite_layout, debug))
+		.add_systems(PreUpdate, (fix_sprite_layout, debug, generate_fov))
 		.add_systems(
 			Update,
 			(

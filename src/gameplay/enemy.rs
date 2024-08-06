@@ -114,12 +114,13 @@ pub(crate) fn move_enemies(
 		'_,
 		(
 			Entity,
-			&mut GridCoords,
+			&GridCoords,
 			&Transform,
 			&mut Sprite,
 			&Spellbook,
 			&mut TextureAtlas,
 			&mut Animation,
+			&mut Visibility,
 		),
 		(With<Enemy>, Without<Player>),
 	>,
@@ -134,12 +135,13 @@ pub(crate) fn move_enemies(
 		let (player_entity, player_pos) = player.single();
 		let (
 			enemy_entity,
-			mut enemy_pos,
+			enemy_pos,
 			enemy_transform,
 			mut enemy_sprite,
 			spellbook,
 			mut enemy_atlas,
 			mut enemy_animation,
+			mut enemy_visibility,
 		) = world_enemies
 			.get_mut(*enemy)
 			.expect("enemy for its turn not found");
@@ -147,7 +149,7 @@ pub(crate) fn move_enemies(
 		flip_sprite(*enemy_pos, *player_pos, &mut enemy_sprite);
 
 		let Some((path, _)) = astar(
-			enemy_pos.as_ref(),
+			enemy_pos,
 			|grid_pos| {
 				OrderedNeighbors::new((*grid_pos).into(), *tile_map_size)
 					.filter_map(|pos| {
@@ -156,11 +158,7 @@ pub(crate) fn move_enemies(
 					})
 					.collect::<Vec<_>>()
 			},
-			|start| {
-				#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-				let distance = util::euclidean_distance(*player_pos, *start) as i32;
-				distance
-			},
+			|start| util::euclidean_distance(*player_pos, *start),
 			|current_pos| current_pos == player_pos,
 		) else {
 			continue;
@@ -171,6 +169,10 @@ pub(crate) fn move_enemies(
 		if destination == player_pos {
 			cast_ability.send(AbilityEvent::new(enemy_entity, player_entity, 0));
 			return;
+		}
+
+		if level_cache.visible_tiles.contains(destination) {
+			enemy_visibility.set_if_neq(Visibility::Inherited);
 		}
 
 		let mut enemy_commands = commands.entity(enemy_entity);
@@ -192,11 +194,10 @@ pub(crate) fn move_enemies(
 
 		let enemy = level_cache
 			.enemies
-			.remove(enemy_pos.as_ref())
+			.remove(enemy_pos)
 			.expect("found no enemy at the moved position");
 		assert_eq!(enemy, enemy_entity, "wrong enemy found in level cache");
 		level_cache.enemies.insert(*destination, enemy);
-		*enemy_pos = *destination;
 
 		*turn_state = TurnState::EnemiesBusy;
 		return;

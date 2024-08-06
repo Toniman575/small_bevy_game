@@ -108,7 +108,7 @@ pub(crate) fn player_movement(
 			Entity,
 			&ActiveAbility,
 			&Transform,
-			&mut GridCoords,
+			&GridCoords,
 			&mut Sprite,
 			&mut TextureAtlas,
 			&mut Animation,
@@ -163,7 +163,7 @@ pub(crate) fn player_movement(
 			player_entity,
 			active_ability,
 			transform,
-			mut grid_pos,
+			grid_pos,
 			mut sprite,
 			mut atlas,
 			mut animation,
@@ -194,8 +194,6 @@ pub(crate) fn player_movement(
 
 				*animation = PlayerBundle::walking_animation();
 				atlas.index = animation.first;
-
-				*grid_pos = destination;
 
 				if let Some(flip) = flip {
 					sprite.flip_x = flip;

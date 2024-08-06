@@ -12,7 +12,9 @@ bevy_ecs_tilemap = { version = "0.14", default-features = false }
 bevy_egui = "0.28"
 bevy_pancam = { version = "0.12", features = ["bevy_egui"] }
 bevy_tweening = "0.11"
+num-traits = "0.2"
 pathfinding = "4"
+symmetric-shadowcasting = "0.2"
 
 [patch.crates-io]
 bevy_input = { git = "https://github.com/daxpedda/bevy", branch = "small-bevy-game" }
