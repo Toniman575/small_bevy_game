@@ -14,6 +14,7 @@ use pathfinding::prelude::astar;
 
 use super::{AbilityEvent, Health, Player, Spellbook, Vision};
 use crate::animation::Animation;
+use crate::gameplay::AbilityEventTarget;
 use crate::util::{self, flip_sprite, OrderedNeighbors};
 use crate::{Destination, Drops, GameState, LevelCache, TurnState, GRID_SIZE};
 
@@ -124,7 +125,7 @@ pub(crate) fn move_enemies(
 			&mut TextureAtlas,
 			&mut Animation,
 			&mut Visibility,
-			&Vision,
+			&mut Vision,
 		),
 		(With<Enemy>, Without<Player>),
 	>,
@@ -146,16 +147,29 @@ pub(crate) fn move_enemies(
 			mut enemy_atlas,
 			mut enemy_animation,
 			mut enemy_visibility,
-			vision,
+			mut enemy_vision,
 		) = world_enemies
 			.get_mut(*enemy)
 			.expect("enemy for its turn not found");
 
-		if !vision.tiles.contains(player_pos) {
-			continue;
-		}
+		let old_player_pos = if enemy_vision.tiles.contains(player_pos) {
+			// If we see the player, update player position.
+			enemy_vision.memory.insert(player_entity, *player_pos);
+			player_pos
+		} else if let Some(old_player_pos) = enemy_vision.memory.get(&player_entity) {
+			// If we reached the memorized player position but the player wasn't here, delete the
+			// memory and stop.
+			if enemy_pos == old_player_pos {
+				enemy_vision.memory.remove(&player_entity).unwrap();
+				continue;
+			}
 
-		flip_sprite(*enemy_pos, *player_pos, &mut enemy_sprite);
+			old_player_pos
+		} else {
+			continue;
+		};
+
+		flip_sprite(*enemy_pos, *old_player_pos, &mut enemy_sprite);
 
 		let Some((path, _)) = astar(
 			enemy_pos,
@@ -167,16 +181,26 @@ pub(crate) fn move_enemies(
 					})
 					.collect::<Vec<_>>()
 			},
-			|start| util::euclidean_distance(*player_pos, *start),
-			|current_pos| current_pos == player_pos,
+			|start| util::euclidean_distance(*old_player_pos, *start),
+			|current_pos| current_pos == old_player_pos,
 		) else {
 			continue;
 		};
 
 		let destination = path.get(1).expect("found empty path");
 
-		if destination == player_pos {
-			cast_ability.send(AbilityEvent::new(enemy_entity, player_entity, 0));
+		let spell = spellbook
+				.0
+				.get(&0)
+				.expect("there has to be at least one spell in a spellbook").clone();
+
+		if old_player_pos == player_pos && destination == player_pos {
+			cast_ability.send(AbilityEvent::new(
+				enemy_entity,
+				spell.id,
+				AbilityEventTarget::Entity(player_entity),
+
+			));
 			return;
 		}
 

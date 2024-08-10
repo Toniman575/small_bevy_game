@@ -1,1 +1,1 @@
-doc-valid-idents = ["FoV", "LoS", ".."]
+doc-valid-idents = ["AoE", "FoV", "LoS", ".."]

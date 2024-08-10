@@ -86,7 +86,7 @@ enum TurnState {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Resource, Reflect)]
 enum PlayerBusy {
 	/// Player is attacking.
-	Attacking,
+	Casting,
 	/// Player is moving.
 	Moving,
 }
@@ -645,7 +645,7 @@ fn camera_update(
 	player: Query<'_, '_, &Transform, (With<Player>, Changed<Transform>)>,
 	mut cam: Query<'_, '_, &mut Transform, (With<Camera>, Without<Player>)>,
 ) {
-	if let TurnState::PlayerBusy(PlayerBusy::Attacking) = turn_state.deref() {
+	if let TurnState::PlayerBusy(PlayerBusy::Casting) = turn_state.deref() {
 		return;
 	}
 

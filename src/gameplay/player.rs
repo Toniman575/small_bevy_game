@@ -15,7 +15,7 @@ use bevy_ecs_tilemap::tiles::TilePos;
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
 
-use super::{AbilityEvent, ActiveAbility, Health, Spellbook, Vision};
+use super::{AbilityEvent, AbilityEventTarget, ActiveAbility, Health, Spellbook, Vision};
 use crate::animation::Animation;
 use crate::{
 	Destination, DoorOpen, GameState, LevelCache, PlayerBusy, PlayerEntityDestination,
@@ -206,8 +206,8 @@ pub(crate) fn player_movement(
 			Destination::Enemy => {
 				cast_ability.send(AbilityEvent::new(
 					player_entity,
-					*level_cache.enemies.get(&destination).unwrap(),
 					active_ability.0,
+					AbilityEventTarget::Entity(*level_cache.enemies.get(&destination).unwrap()),
 				));
 			}
 			Destination::Door(door) => {
@@ -286,13 +286,9 @@ pub(crate) fn door_interactions(
 pub(crate) fn cast_ability(
 	mut inputs: EventReader<'_, '_, MouseButtonInput>,
 	mut abilities: EventWriter<'_, AbilityEvent>,
-	player: Query<'_, '_, (Entity, &ActiveAbility), With<Player>>,
-	targeting_marker: Query<'_, '_, &TargetingMarker>,
+	player: Query<'_, '_, (Entity, &ActiveAbility, &Spellbook), With<Player>>,
+	targeting_marker: Query<'_, '_, (&GridCoords, &TargetingMarker)>,
 ) {
-	let Some(target_entity) = targeting_marker.single().0 else {
-		return;
-	};
-
 	for input in inputs.read() {
 		let MouseButtonInput {
 			state: ButtonState::Pressed,
@@ -303,9 +299,33 @@ pub(crate) fn cast_ability(
 			continue;
 		};
 
-		let (player_entity, ability) = player.single();
+		let (player_entity, ability, spellbook) = player.single();
+		let (target_grid_coords, target_marker) = targeting_marker.single();
 
-		abilities.send(AbilityEvent::new(player_entity, target_entity, ability.0));
+		if spellbook
+			.0
+			.get(&ability.0)
+			.expect("active ability has a non valid ability id")
+			.aoe
+			.is_some()
+		{
+			abilities.send(AbilityEvent::new(
+				player_entity,
+				ability.0,
+				AbilityEventTarget::Tile(*target_grid_coords),
+
+			))
+		} else {
+			let Some(target_entity) = target_marker.0 else {
+				return;
+			};
+
+			abilities.send(AbilityEvent::new(
+				player_entity,
+				ability.0,
+				AbilityEventTarget::Entity(target_entity),
+			))
+		};
 
 		return;
 	}
