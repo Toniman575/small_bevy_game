@@ -8,7 +8,7 @@ use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
 use bevy_tweening::{Animator, TweenCompleted};
 
-use crate::gameplay::{Enemy, EnemyBundle, Player, PlayerBundle};
+use crate::gameplay::{Enemy, EnemyBundle, Player, PlayerBundle, Vision};
 use crate::{GameState, LevelCache, TurnState, GRID_SIZE};
 
 /// Animated sprite.
@@ -65,6 +65,7 @@ pub(crate) fn finish_animation(
 	mut turn_state: ResMut<'_, TurnState>,
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut completed: EventReader<'_, '_, TweenCompleted>,
+	player_q: Query<'_, '_, &Vision, With<Player>>,
 	mut query: Query<
 		'_,
 		'_,
@@ -79,6 +80,10 @@ pub(crate) fn finish_animation(
 		),
 	>,
 ) {
+	let Ok(player_vision) = player_q.get_single() else {
+		return;
+	};
+
 	for completed in completed.read() {
 		let (
 			transform,
@@ -120,7 +125,7 @@ pub(crate) fn finish_animation(
 		}
 
 		// Hide enemy if it makes sense.
-		if has_enemy && !level_cache.visible_tiles.contains(&grid_coord) {
+		if has_enemy && !player_vision.tiles.contains(&grid_coord) {
 			visibility.set_if_neq(Visibility::Hidden);
 		}
 	}

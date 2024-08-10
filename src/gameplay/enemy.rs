@@ -12,7 +12,7 @@ use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
 use pathfinding::prelude::astar;
 
-use super::{AbilityEvent, Health, Player, Spellbook};
+use super::{AbilityEvent, Health, Player, Spellbook, Vision};
 use crate::animation::Animation;
 use crate::util::{self, flip_sprite, OrderedNeighbors};
 use crate::{Destination, Drops, GameState, LevelCache, TurnState, GRID_SIZE};
@@ -42,6 +42,8 @@ pub(crate) struct EnemyBundle {
 	grid_coords:         GridCoords,
 	/// Animation.
 	animation:           Animation,
+	/// Which tiles the enemy can see.
+	vision:              Vision,
 }
 
 impl Default for EnemyBundle {
@@ -54,6 +56,7 @@ impl Default for EnemyBundle {
 			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
 			animation:           Self::idle_animation(),
+			vision:              Vision::new(2),
 		}
 	}
 }
@@ -108,7 +111,7 @@ pub(crate) fn move_enemies(
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut turn_state: ResMut<'_, TurnState>,
 	tile_map_size: Query<'_, '_, &TilemapSize>,
-	player: Query<'_, '_, (Entity, &GridCoords), (Without<Enemy>, With<Player>)>,
+	player: Query<'_, '_, (Entity, &GridCoords, &Vision), (Without<Enemy>, With<Player>)>,
 	mut world_enemies: Query<
 		'_,
 		'_,
@@ -121,6 +124,7 @@ pub(crate) fn move_enemies(
 			&mut TextureAtlas,
 			&mut Animation,
 			&mut Visibility,
+			&Vision,
 		),
 		(With<Enemy>, Without<Player>),
 	>,
@@ -132,7 +136,7 @@ pub(crate) fn move_enemies(
 		*ready = false;
 
 		let tile_map_size = tile_map_size.single();
-		let (player_entity, player_pos) = player.single();
+		let (player_entity, player_pos, player_vision) = player.single();
 		let (
 			enemy_entity,
 			enemy_pos,
@@ -142,9 +146,14 @@ pub(crate) fn move_enemies(
 			mut enemy_atlas,
 			mut enemy_animation,
 			mut enemy_visibility,
+			vision,
 		) = world_enemies
 			.get_mut(*enemy)
 			.expect("enemy for its turn not found");
+
+		if !vision.tiles.contains(player_pos) {
+			continue;
+		}
 
 		flip_sprite(*enemy_pos, *player_pos, &mut enemy_sprite);
 
@@ -171,7 +180,7 @@ pub(crate) fn move_enemies(
 			return;
 		}
 
-		if level_cache.visible_tiles.contains(destination) {
+		if player_vision.tiles.contains(destination) {
 			enemy_visibility.set_if_neq(Visibility::Inherited);
 		}
 

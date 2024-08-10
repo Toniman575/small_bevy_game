@@ -15,7 +15,7 @@ use bevy_ecs_tilemap::tiles::TilePos;
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
 
-use super::{AbilityEvent, ActiveAbility, Health, Spellbook};
+use super::{AbilityEvent, ActiveAbility, Health, Spellbook, Vision};
 use crate::animation::Animation;
 use crate::{
 	Destination, DoorOpen, GameState, LevelCache, PlayerBusy, PlayerEntityDestination,
@@ -49,6 +49,8 @@ pub(crate) struct PlayerBundle {
 	/// Makes the player "Worldly".
 	#[worldly]
 	worldly:             Worldly,
+	/// Vision.
+	vision:              Vision,
 }
 
 impl Default for PlayerBundle {
@@ -62,6 +64,7 @@ impl Default for PlayerBundle {
 			grid_coords:         GridCoords::default(),
 			animation:           Self::idle_animation(),
 			worldly:             Worldly::default(),
+			vision:              Vision::new(4),
 		}
 	}
 }

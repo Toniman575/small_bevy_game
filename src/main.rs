@@ -56,12 +56,12 @@ use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
 	SidePanel, Stroke, Widget,
 };
-use fow::generate_fov;
-use gameplay::{cast_ability, door_interactions, move_enemies, player_movement, select_ability};
 
+use self::fow::{generate_fov, ApplyFov};
 use self::gameplay::{
-	death, handle_ability_event, spawn_healthbar, tick_cooldowns, update_healthbar, AbilityEvent,
-	ActiveAbility, DeathEvent, Enemy, EnemyBundle, Health, Player, PlayerBundle, Spellbook,
+	cast_ability, death, door_interactions, handle_ability_event, move_enemies, player_movement,
+	select_ability, spawn_healthbar, tick_cooldowns, update_healthbar, AbilityEvent, ActiveAbility,
+	DeathEvent, Enemy, EnemyBundle, Health, Player, PlayerBundle, Spellbook, Vision,
 };
 
 /// The size of the Grid in pixels.
@@ -197,19 +197,17 @@ struct DoorBundle {
 #[reflect(Resource)]
 struct LevelCache {
 	/// The cashed walls of this level.
-	walls:         HashSet<GridCoords>,
+	walls:   HashSet<GridCoords>,
 	/// The cashed doors of this level.
-	doors:         HashMap<GridCoords, (Entity, EntityIid, Door)>,
+	doors:   HashMap<GridCoords, (Entity, EntityIid, Door)>,
 	/// The cashed enemies of this level.
-	enemies:       HashMap<GridCoords, Entity>,
+	enemies: HashMap<GridCoords, Entity>,
 	/// The cashed keys of this level.
-	keys:          HashMap<GridCoords, (Entity, ItemSource)>,
+	keys:    HashMap<GridCoords, (Entity, ItemSource)>,
 	/// The level width in tiles.
-	width:         i32,
+	width:   i32,
 	/// The level height in tiles.
-	height:        i32,
-	/// Tiles currently visible by the player.
-	visible_tiles: Vec<GridCoords>,
+	height:  i32,
 }
 
 /// Source of item could be LDTK level or drop from enemy.
@@ -402,13 +400,12 @@ fn level_spawn(
 
 	// ... so we can update the [`LevelCache`] resource.
 	*level_cache = LevelCache {
-		walls:         walls.iter().copied().collect(),
-		enemies:       enemies_map,
-		keys:          keys_map,
-		doors:         doors_map,
-		width:         level.px_wid / GRID_SIZE,
-		height:        level.px_hei / GRID_SIZE,
-		visible_tiles: Vec::new(),
+		walls:   walls.iter().copied().collect(),
+		enemies: enemies_map,
+		keys:    keys_map,
+		doors:   doors_map,
+		width:   level.px_wid / GRID_SIZE,
+		height:  level.px_hei / GRID_SIZE,
 	};
 
 	// We need to update the players grid coords on level changes to the correct "entrance".
@@ -478,15 +475,15 @@ fn door_trigger(
 #[reflect(Resource)]
 struct GameState {
 	/// The current turn.
-	turn:           u64,
+	turn:          u64,
 	/// State of each door.
-	doors:          HashMap<EntityIid, bool>,
+	doors:         HashMap<EntityIid, bool>,
 	/// State of each key.
-	keys:           HashMap<ItemSource, bool>,
+	keys:          HashMap<ItemSource, bool>,
 	/// Current enemy order.
-	enemies:        Vec<(Entity, bool)>,
+	enemies:       Vec<(Entity, bool)>,
 	/// Amount of keys the player possesses.
-	player_keys:    u8,
+	player_keys:   u8,
 	/// Tiles already seen by the player.
 	visited_tiles: HashMap<LevelIid, HashSet<GridCoords>>,
 }
@@ -509,6 +506,7 @@ enum Debug {
 /// Enables/Disables debug mode.
 #[allow(clippy::needless_pass_by_value)]
 fn debug(
+	mut commands: Commands<'_, '_>,
 	mut context: EguiContexts<'_, '_>,
 	mut input: EventReader<'_, '_, KeyboardInput>,
 	mut debug: ResMut<'_, Debug>,
@@ -556,6 +554,8 @@ fn debug(
 					*debug = Debug::Inactive;
 				}
 			}
+
+			commands.trigger(ApplyFov);
 		}
 	}
 }
@@ -590,7 +590,7 @@ fn update_cursor_pos(
 #[allow(clippy::needless_pass_by_value)]
 fn update_target_marker(
 	cursor_pos: Res<'_, CursorPos>,
-	player: Query<'_, '_, (&GridCoords, &Spellbook, &ActiveAbility), With<Player>>,
+	player: Query<'_, '_, (&GridCoords, &Spellbook, &ActiveAbility, &Vision), With<Player>>,
 	mut target_marker: Query<
 		'_,
 		'_,
@@ -605,12 +605,12 @@ fn update_target_marker(
 	level_cache: Res<'_, LevelCache>,
 ) {
 	let (mut marker, mut visibility, mut grid_coords, mut sprite) = target_marker.single_mut();
-	let Ok((player_grid_coords, spellbook, active_ability)) = player.get_single() else {
+	let Ok((player_grid_coords, spellbook, active_ability, vision)) = player.get_single() else {
 		return;
 	};
 
 	if level_cache.outside_boundary(cursor_pos.tile_pos)
-		|| !level_cache.visible_tiles.contains(&cursor_pos.tile_pos)
+		|| !vision.tiles.contains(&cursor_pos.tile_pos)
 	{
 		*visibility = Visibility::Hidden;
 		marker.set_if_neq(TargetingMarker(None));
@@ -892,5 +892,6 @@ fn main() {
 		.register_type::<TurnState>()
 		.register_type::<Spellbook>()
 		.observe(door_trigger)
+		.observe(fow::apply_fov)
 		.run();
 }

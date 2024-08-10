@@ -52,6 +52,25 @@ impl From<&EntityInstance> for Health {
 #[derive(Component)]
 pub(crate) struct HealthBar;
 
+/// Component for tracking which tiles this entity sees.
+#[derive(Component, Reflect)]
+pub(crate) struct Vision {
+	/// List of currently visible tiles.
+	pub(crate) tiles: Vec<GridCoords>,
+	/// How far the entity can see.
+	pub(crate) range: u8,
+}
+
+impl Vision {
+	/// Create a new [`Vision`] with the given `range`.
+	pub(crate) const fn new(range: u8) -> Self {
+		Self {
+			tiles: Vec::new(),
+			range,
+		}
+	}
+}
+
 /// When an entity dies, it sends this event.
 #[derive(Event)]
 pub(crate) struct DeathEvent(Entity);
@@ -348,6 +367,7 @@ pub(crate) fn death(
 	mut commands: Commands<'_, '_>,
 	asset_server: Res<'_, AssetServer>,
 	mut deaths: EventReader<'_, '_, DeathEvent>,
+	player_q: Query<'_, '_, &Vision, With<Player>>,
 	mut animations: Query<
 		'_,
 		'_,
@@ -368,6 +388,10 @@ pub(crate) fn death(
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut game_state: ResMut<'_, GameState>,
 ) {
+	let Ok(player_vision) = player_q.get_single() else {
+		return;
+	};
+
 	if deaths.is_empty() {
 		return;
 	}
@@ -471,7 +495,7 @@ pub(crate) fn death(
 									..Sprite::default()
 								},
 								texture: key_texture,
-								visibility: if level_cache.visible_tiles.contains(&grid_coords) {
+								visibility: if player_vision.tiles.contains(&grid_coords) {
 									Visibility::default()
 								} else {
 									Visibility::Hidden
