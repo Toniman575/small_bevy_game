@@ -3,7 +3,6 @@
 //!   - Replace animation code with <https://github.com/merwaaan/bevy_spritesheet_animation>.
 //!   - Replace egui with <https://github.com/UmbraLuminosa/sickle_ui> maybe?
 //! - Line of sight
-//!   - Add "memory" to the fow.
 //!   - When player goes out of LoS enemies go to last known position and "wait" before returning to
 //!     their spawn point.
 //! - Abilities
@@ -479,15 +478,17 @@ fn door_trigger(
 #[reflect(Resource)]
 struct GameState {
 	/// The current turn.
-	turn:        u64,
+	turn:           u64,
 	/// State of each door.
-	doors:       HashMap<EntityIid, bool>,
+	doors:          HashMap<EntityIid, bool>,
 	/// State of each key.
-	keys:        HashMap<ItemSource, bool>,
+	keys:           HashMap<ItemSource, bool>,
 	/// Current enemy order.
-	enemies:     Vec<(Entity, bool)>,
+	enemies:        Vec<(Entity, bool)>,
 	/// Amount of keys the player possesses.
-	player_keys: u8,
+	player_keys:    u8,
+	/// Tiles already seen by the player.
+	visited_tiles: HashMap<LevelIid, HashSet<GridCoords>>,
 }
 
 /// Stores debug state.
