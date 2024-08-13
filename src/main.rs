@@ -20,6 +20,9 @@
 //! - Show all levels in debug mode.
 //!
 //! Bugs:
+//! - Teleporting on top of items doesn't pick them up.
+//! - Teleporting to an out-of-sight tile teleports to the last valid tile the cursor touched.
+//! - Enemies that attack the player from outside the vision range should become visible.
 //! - Sometimes levels are not despawned correctly, leading to false walls and doors being cached.
 //! - Fully loaded levels, before cleanup, can sometimes be seen for a single frame.
 

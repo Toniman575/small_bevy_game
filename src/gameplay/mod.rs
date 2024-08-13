@@ -238,7 +238,7 @@ impl Spellbook {
 			(
 				3,
 				Ability::new(
-					2,
+					3,
 					String::from("Teleport"),
 					5,
 					Some(0),
@@ -284,6 +284,7 @@ pub(crate) fn handle_ability_event(
 			&mut Spellbook,
 			&mut Sprite,
 			&mut Health,
+			&mut Vision,
 			Has<Player>,
 			Has<Enemy>,
 		),
@@ -325,6 +326,9 @@ pub(crate) fn handle_ability_event(
 					caster_grid_coord.set_if_neq(target_grid_coord);
 				}
 
+				state.turn += 1;
+				*animation_state = TurnState::EnemiesWaiting;
+
 				continue;
 			}
 		};
@@ -336,11 +340,12 @@ pub(crate) fn handle_ability_event(
 				caster_grid_coord,
 				mut spellbook,
 				mut sprite,
-				mut health,
-				has_player,
-				has_enemy,
+				_,
+				_,
+				caster_is_player,
+				caster_is_enemy,
 			),
-			(_, target_transform, target_grid_coord, ..),
+			(_, target_transform, target_grid_coord, _, _, mut target_health, mut vision, ..),
 		] = entities_q.many_mut([ability_event.caster_entity, target_entity]);
 
 		flip_sprite(*caster_grid_coord, *target_grid_coord, &mut sprite);
@@ -350,49 +355,53 @@ pub(crate) fn handle_ability_event(
 			.get_mut(&ability_event.ability)
 			.expect("requested non-existing ability");
 
-		if ability.last_cast.is_none()
-			&& ability.in_euclidean_range(*caster_grid_coord, *target_grid_coord)
+		if ability.last_cast.is_some()
+			|| !ability.in_euclidean_range(*caster_grid_coord, *target_grid_coord)
 		{
-			if has_player {
-				state.turn += 1;
-				*animation_state = TurnState::PlayerBusy(PlayerBusy::Casting);
-			} else if has_enemy {
-				*animation_state = TurnState::EnemiesBusy;
-			} else {
-				unreachable!("entity has to be enemy or player");
-			}
+			continue;
+		}
 
-			health.current = health.current.saturating_sub(power);
-			let target = caster_transform.translation
-				+ ((target_transform.translation.xy() - caster_transform.translation.xy())
-					.normalize() * 5.)
-					.extend(caster_transform.translation.z);
+		vision.memory.insert(caster_entity, *caster_grid_coord);
 
-			commands.entity(caster_entity).insert((Animator::new(
+		if caster_is_player {
+			state.turn += 1;
+			*animation_state = TurnState::PlayerBusy(PlayerBusy::Casting);
+		} else if caster_is_enemy {
+			*animation_state = TurnState::EnemiesBusy;
+		} else {
+			unreachable!("entity has to be enemy or player");
+		}
+
+		target_health.current = target_health.current.saturating_sub(power);
+		let target = caster_transform.translation
+			+ ((target_transform.translation.xy() - caster_transform.translation.xy()).normalize()
+				* 5.)
+				.extend(caster_transform.translation.z);
+
+		commands.entity(caster_entity).insert((Animator::new(
+			Tween::new(
+				EaseMethod::Linear,
+				Duration::from_secs_f64(0.1),
+				TransformPositionLens {
+					start: caster_transform.translation,
+					end:   target,
+				},
+			)
+			.then(
 				Tween::new(
 					EaseMethod::Linear,
 					Duration::from_secs_f64(0.1),
 					TransformPositionLens {
-						start: caster_transform.translation,
-						end:   target,
+						start: target,
+						end:   caster_transform.translation,
 					},
 				)
-				.then(
-					Tween::new(
-						EaseMethod::Linear,
-						Duration::from_secs_f64(0.1),
-						TransformPositionLens {
-							start: target,
-							end:   caster_transform.translation,
-						},
-					)
-					.with_completed_event(0),
-				),
-			),));
+				.with_completed_event(0),
+			),
+		),));
 
-			if ability.cooldown.is_some() {
-				ability.last_cast = Some(state.turn);
-			}
+		if ability.cooldown.is_some() {
+			ability.last_cast = Some(state.turn);
 		}
 	}
 }
