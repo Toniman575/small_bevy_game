@@ -1,23 +1,25 @@
 //! TODO:
-//! - Refactor Code
-//!   - Replace animation code with <https://github.com/merwaaan/bevy_spritesheet_animation>.
-//!   - Replace egui with <https://github.com/UmbraLuminosa/sickle_ui> maybe?
-//! - Line of sight
-//!   - When player goes out of LoS enemies go to last known position and "wait" before returning to
-//!     their spawn point.
 //! - Abilities
 //!   - Implement tooltip.
 //!   - Make sure its easy to add new abilities.
-//!   - Make enemies use abilities.
+//!   - Add healing abilites.
+//!   - Add displacing abilities.
+//!   - Add defensive abilities.
+//!   - Add buffing abilities.
+//!   - Make enemies use new abilities. Probably with a simple state machine.
 //! - Debuffs
 //!   - Implement bleeding debuff on enemies, think about presentation.
 //!   - Make sure its easy to integrate with abilities and add new ones.
 //! - Bonus
 //!   - Delete `LevelCache`.
 //!   - Let players speed up turns (turn off animations, speed them up etc.).
-//!
-//! Not important:
-//! - Show all levels in debug mode.
+//!   - Better horde behavior.
+//!   - When player goes out of LoS enemies go to last known position and "wait" before returning to
+//!     their spawn point.
+//!   - Replace animation code with <https://github.com/merwaaan/bevy_spritesheet_animation>.
+//!   - Refine animations and ability presentation.
+//!   - Replace egui with <https://github.com/UmbraLuminosa/sickle_ui> maybe?
+//!   - Show all levels in debug mode.
 //!
 //! Bugs:
 //! - Enemies that attack the player from outside the vision range should become visible.
