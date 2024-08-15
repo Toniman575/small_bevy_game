@@ -322,14 +322,19 @@ fn level_spawn(
 	mut state: ResMut<'_, GameState>,
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut level_events: EventReader<'_, '_, LevelEvent>,
-	walls: Query<'_, '_, &GridCoords, (With<Wall>, Without<Player>)>,
-	enemies: Query<
+	walls: Query<'_, '_, &GridCoords, (With<Wall>, Without<Enemy>, Without<Player>)>,
+	mut enemies: Query<
 		'_,
 		'_,
-		(&GridCoords, Entity, &EntityIid, &Drops),
+		(&mut GridCoords, Entity, &EntityIid, &Drops),
 		(With<Enemy>, Without<Player>),
 	>,
-	keys: Query<'_, '_, (&GridCoords, Entity, &EntityIid), (With<Key>, Without<Player>)>,
+	keys: Query<
+		'_,
+		'_,
+		(&GridCoords, Entity, &EntityIid),
+		(With<Key>, Without<Enemy>, Without<Player>),
+	>,
 	mut doors: Query<
 		'_,
 		'_,
@@ -338,8 +343,8 @@ fn level_spawn(
 	>,
 	mut player_entity_destination: ResMut<'_, PlayerEntityDestination>,
 	ldtk_entities: Query<'_, '_, (Entity, &EntityIid), Without<Player>>,
-	entity_grid_coords: Query<'_, '_, &GridCoords, Without<Player>>,
-	mut player: Query<'_, '_, &mut GridCoords, With<Player>>,
+	door_grid_coords: Query<'_, '_, &GridCoords, (Without<Enemy>, Without<Player>)>,
+	mut player: Query<'_, '_, &mut GridCoords, (Without<Enemy>, With<Player>)>,
 	ldtk_project_entities: Query<'_, '_, &Handle<LdtkProject>>,
 	ldtk_project_assets: Res<'_, Assets<LdtkProject>>,
 ) {
@@ -417,7 +422,7 @@ fn level_spawn(
 			.find(|(_, entityiid)| *entityiid == destination_entity_iid)
 			.expect("the entity IID should exist");
 
-		let destination_grid_coords = entity_grid_coords
+		let destination_grid_coords = door_grid_coords
 			.get(destination_entity)
 			.expect("destination entity should exist");
 		let mut player_grid_coords = player.single_mut();
@@ -430,7 +435,8 @@ fn level_spawn(
 	state.enemies.clear();
 
 	// Set enemies to ready and add them to the state.
-	for (_, entity, ..) in enemies.iter() {
+	for (mut grid_coords, entity, ..) in &mut enemies {
+		grid_coords.set_changed();
 		state.enemies.push((entity, true));
 	}
 }
@@ -518,8 +524,6 @@ fn debug(
 		(&mut Transform, &mut OrthographicProjection, &mut PanCam),
 		With<Camera>,
 	>,
-	enemy_vision: Query<'_, '_, &Vision, With<Enemy>>,
-	mut tile_color_q: Query<'_, '_, (&GridCoords, &mut TileColor)>,
 ) {
 	if context.ctx_mut().wants_keyboard_input() {
 		return;
