@@ -19,7 +19,7 @@ pub(crate) use self::enemy::{move_enemies, Enemy, EnemyBundle};
 pub(crate) use self::player::{
 	cast_ability, door_interactions, player_movement, select_ability, Player, PlayerBundle,
 };
-use crate::animation::Animation;
+use crate::animation::{Animation, ArrivedAtTile};
 use crate::util::{flip_sprite, OrderedNeighbors};
 use crate::{
 	util, Destination, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, TurnState,
@@ -135,7 +135,7 @@ pub(crate) struct Ability {
 	/// If this ability is an AoE ability, and its radius, or targets a single entity.
 	pub(crate) aoe:       Option<u8>,
 	/// The effect of the ability.
-	effect:               AbilityEffect,
+	pub(crate) effect:    AbilityEffect,
 	/// The Cooldown of the ability.
 	cooldown:             Option<u8>,
 	/// When this ability was last cast.
@@ -251,17 +251,30 @@ impl Spellbook {
 
 	/// Default spellbook for enemies.
 	fn default_enemy() -> Self {
-		Self(BTreeMap::from([(
-			0,
-			Ability::new(
+		Self(BTreeMap::from([
+			(
 				0,
-				String::from("Autoattack"),
-				1,
-				None,
-				AbilityEffect::Health(3),
-				None,
+				Ability::new(
+					0,
+					String::from("Autoattack"),
+					1,
+					None,
+					AbilityEffect::Health(3),
+					None,
+				),
 			),
-		)]))
+			(
+				1,
+				Ability::new(
+					1,
+					String::from("Ranged"),
+					2,
+					None,
+					AbilityEffect::Health(1),
+					None,
+				),
+			),
+		]))
 	}
 }
 
@@ -270,7 +283,11 @@ impl Spellbook {
 pub(crate) struct ActiveAbility(pub(crate) u64);
 
 /// Handles when an entity wants to cast an ability.
-#[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
+#[allow(
+	clippy::needless_pass_by_value,
+	clippy::too_many_lines,
+	clippy::type_complexity
+)]
 pub(crate) fn handle_ability_event(
 	mut commands: Commands<'_, '_>,
 	mut state: ResMut<'_, GameState>,
@@ -316,15 +333,30 @@ pub(crate) fn handle_ability_event(
 					unreachable!("sent teleport spell on an entity")
 				};
 
-				let (_, _, mut caster_grid_coord, ..) = entities_q
-					.get_mut(ability_event.caster_entity)
-					.expect("caster not found");
+				let (caster_entity, _, mut caster_grid_coord, spellbook, mut sprite, ..) =
+					entities_q
+						.get_mut(ability_event.caster_entity)
+						.expect("caster not found");
+				flip_sprite(*caster_grid_coord, target_grid_coord, &mut sprite);
+
+				let ability = spellbook
+					.0
+					.get(&ability_event.ability)
+					.expect("requested non-existing ability");
+
+				if ability.last_cast.is_some()
+					|| !ability.in_euclidean_range(*caster_grid_coord, target_grid_coord)
+				{
+					continue;
+				}
 
 				if let Destination::Walkable =
 					level_cache.destination(&state.doors, *caster_grid_coord, target_grid_coord)
 				{
 					caster_grid_coord.set_if_neq(target_grid_coord);
 				}
+
+				commands.trigger_targets(ArrivedAtTile, caster_entity);
 
 				state.turn += 1;
 				*animation_state = TurnState::EnemiesWaiting;

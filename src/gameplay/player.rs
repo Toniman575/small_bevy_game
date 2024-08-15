@@ -286,7 +286,7 @@ pub(crate) fn door_interactions(
 pub(crate) fn cast_ability(
 	mut inputs: EventReader<'_, '_, MouseButtonInput>,
 	mut abilities: EventWriter<'_, AbilityEvent>,
-	player: Query<'_, '_, (Entity, &ActiveAbility, &Spellbook), With<Player>>,
+	player: Query<'_, '_, (Entity, &Vision, &ActiveAbility, &Spellbook), With<Player>>,
 	targeting_marker: Query<'_, '_, (&GridCoords, &TargetingMarker)>,
 ) {
 	for input in inputs.read() {
@@ -299,8 +299,12 @@ pub(crate) fn cast_ability(
 			continue;
 		};
 
-		let (player_entity, ability, spellbook) = player.single();
+		let (player_entity, vision, ability, spellbook) = player.single();
 		let (target_grid_coords, target_marker) = targeting_marker.single();
+
+		if !vision.tiles.contains(target_grid_coords) {
+			continue;
+		}
 
 		if spellbook
 			.0
@@ -313,7 +317,6 @@ pub(crate) fn cast_ability(
 				player_entity,
 				ability.0,
 				AbilityEventTarget::Tile(*target_grid_coords),
-
 			))
 		} else {
 			let Some(target_entity) = target_marker.0 else {

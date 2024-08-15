@@ -20,8 +20,6 @@
 //! - Show all levels in debug mode.
 //!
 //! Bugs:
-//! - Teleporting on top of items doesn't pick them up.
-//! - Teleporting to an out-of-sight tile teleports to the last valid tile the cursor touched.
 //! - Enemies that attack the player from outside the vision range should become visible.
 //! - Sometimes levels are not despawned correctly, leading to false walls and doors being cached.
 //! - Fully loaded levels, before cleanup, can sometimes be seen for a single frame.
@@ -41,6 +39,7 @@ use std::mem;
 use std::ops::{Deref, DerefMut};
 
 use bevy::color::palettes::basic::*;
+use bevy::color::palettes::css::RED;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
 use bevy::prelude::{AssetServer, *};
@@ -60,11 +59,11 @@ use egui::{
 	SidePanel, Stroke, Widget,
 };
 
-use self::fow::{generate_fov, ApplyFov};
+use self::fow::{generate_fov, ApplyFoW};
 use self::gameplay::{
 	cast_ability, death, door_interactions, handle_ability_event, move_enemies, player_movement,
-	select_ability, spawn_healthbar, tick_cooldowns, update_healthbar, AbilityEvent, ActiveAbility,
-	DeathEvent, Enemy, EnemyBundle, Health, Player, PlayerBundle, Spellbook, Vision,
+	select_ability, spawn_healthbar, tick_cooldowns, update_healthbar, AbilityEffect, AbilityEvent,
+	ActiveAbility, DeathEvent, Enemy, EnemyBundle, Health, Player, PlayerBundle, Spellbook, Vision,
 };
 
 /// The size of the Grid in pixels.
@@ -519,6 +518,8 @@ fn debug(
 		(&mut Transform, &mut OrthographicProjection, &mut PanCam),
 		With<Camera>,
 	>,
+	enemy_vision: Query<'_, '_, &Vision, With<Enemy>>,
+	mut tile_color_q: Query<'_, '_, (&GridCoords, &mut TileColor)>,
 ) {
 	if context.ctx_mut().wants_keyboard_input() {
 		return;
@@ -542,7 +543,7 @@ fn debug(
 					*debug = Debug::Active {
 						cam_transform:  *cam_transform,
 						cam_projection: cam_projection.clone(),
-					}
+					};
 				}
 				Debug::Active {
 					cam_transform: old_cam_transform,
@@ -558,7 +559,7 @@ fn debug(
 				}
 			}
 
-			commands.trigger(ApplyFov);
+			commands.trigger(ApplyFoW);
 		}
 	}
 }
@@ -621,22 +622,40 @@ fn update_target_marker(
 		visibility.set_if_neq(Visibility::Inherited);
 		grid_coords.set_if_neq(cursor_pos.tile_pos);
 
-		if let Some(entity) = level_cache.enemies.get(grid_coords.deref()) {
-			let ability = spellbook
-				.0
-				.get(&active_ability.0)
-				.expect("Player has to have an active ability.");
+		let ability = spellbook
+			.0
+			.get(&active_ability.0)
+			.expect("Player has to have an active ability.");
+		let enemy = level_cache.enemies.get(grid_coords.deref());
 
-			if ability.in_euclidean_range(*player_grid_coords, *grid_coords) {
-				sprite.color = RED.into();
-			} else {
-				sprite.color = YELLOW.into();
+		match &ability.effect {
+			AbilityEffect::Health(_) => {
+				if let Some(entity) = enemy {
+					if ability.in_euclidean_range(*player_grid_coords, *grid_coords) {
+						sprite.color = RED.into();
+					} else {
+						sprite.color = YELLOW.into();
+					}
+
+					marker.set_if_neq(TargetingMarker(Some(*entity)));
+				} else {
+					sprite.color = Color::WHITE;
+					marker.set_if_neq(TargetingMarker(None));
+				}
 			}
+			AbilityEffect::Teleport => {
+				marker.set_if_neq(TargetingMarker(None));
 
-			marker.set_if_neq(TargetingMarker(Some(*entity)));
-		} else {
-			sprite.color = Color::WHITE;
-			marker.set_if_neq(TargetingMarker(None));
+				if enemy.is_none() && !level_cache.walls.contains(grid_coords.deref()) {
+					if ability.in_euclidean_range(*player_grid_coords, *grid_coords) {
+						sprite.color = RED.into();
+					} else {
+						sprite.color = YELLOW.into();
+					}
+				} else {
+					sprite.color = Color::WHITE;
+				}
+			}
 		}
 	}
 }
@@ -895,6 +914,7 @@ fn main() {
 		.register_type::<TurnState>()
 		.register_type::<Spellbook>()
 		.observe(door_trigger)
-		.observe(fow::apply_fov)
+		.observe(fow::apply_fow)
+		.observe(animation::arrived_at_tile)
 		.run();
 }

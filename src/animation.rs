@@ -1,7 +1,5 @@
 //! Animation system.
 
-use std::ops::Deref;
-
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use bevy_ecs_ldtk::prelude::*;
@@ -61,15 +59,14 @@ pub(crate) fn animate(
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 pub(crate) fn finish_animation(
 	mut commands: Commands<'_, '_>,
-	mut state: ResMut<'_, GameState>,
 	mut turn_state: ResMut<'_, TurnState>,
-	mut level_cache: ResMut<'_, LevelCache>,
 	mut completed: EventReader<'_, '_, TweenCompleted>,
 	player_q: Query<'_, '_, &Vision, With<Player>>,
 	mut query: Query<
 		'_,
 		'_,
 		(
+			Entity,
 			&Transform,
 			&mut GridCoords,
 			&mut TextureAtlas,
@@ -86,6 +83,7 @@ pub(crate) fn finish_animation(
 
 	for completed in completed.read() {
 		let (
+			entity,
 			transform,
 			mut grid_coord,
 			mut atlas,
@@ -115,18 +113,39 @@ pub(crate) fn finish_animation(
 			.entity(completed.entity)
 			.remove::<Animator<Transform>>();
 
-		// Pick up items if it makes sense.
-		if has_player {
-			if let Some((entity, source)) = level_cache.keys.remove(grid_coord.deref()) {
-				*state.keys.get_mut(&source).unwrap() = true;
-				state.player_keys += 1;
-				commands.entity(entity).insert(Visibility::Hidden);
-			}
+		// Hide enemy if it makes sense.
+		if has_enemy
+			&& !player_vision.tiles.contains(&grid_coord)
+			&& !player_vision.memory.contains_key(&entity)
+		{
+			visibility.set_if_neq(Visibility::Hidden);
 		}
 
-		// Hide enemy if it makes sense.
-		if has_enemy && !player_vision.tiles.contains(&grid_coord) {
-			visibility.set_if_neq(Visibility::Hidden);
+		commands.trigger_targets(ArrivedAtTile, entity);
+	}
+}
+
+/// Observer for when entities arrive at a tile.
+#[derive(Event)]
+pub(crate) struct ArrivedAtTile;
+
+/// Run when an entity has arrived at a tile.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn arrived_at_tile(
+	trigger: Trigger<'_, ArrivedAtTile>,
+	mut commands: Commands<'_, '_>,
+	mut state: ResMut<'_, GameState>,
+	mut level_cache: ResMut<'_, LevelCache>,
+	mut query: Query<'_, '_, (&GridCoords, Has<Player>)>,
+) {
+	let (grid_coord, has_player) = query.get_mut(trigger.entity()).expect("entity not found");
+
+	// Pick up items if it makes sense.
+	if has_player {
+		if let Some((entity, source)) = level_cache.keys.remove(grid_coord) {
+			*state.keys.get_mut(&source).unwrap() = true;
+			state.player_keys += 1;
+			commands.entity(entity).insert(Visibility::Hidden);
 		}
 	}
 }

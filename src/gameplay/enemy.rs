@@ -57,7 +57,7 @@ impl Default for EnemyBundle {
 			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
 			animation:           Self::idle_animation(),
-			vision:              Vision::new(2),
+			vision:              Vision::new(4),
 		}
 	}
 }
@@ -104,7 +104,8 @@ impl EnemyBundle {
 #[allow(
 	clippy::needless_pass_by_value,
 	clippy::type_complexity,
-	clippy::too_many_arguments
+	clippy::too_many_arguments,
+	clippy::too_many_lines
 )]
 pub(crate) fn move_enemies(
 	mut commands: Commands<'_, '_>,
@@ -171,7 +172,7 @@ pub(crate) fn move_enemies(
 
 		flip_sprite(*enemy_pos, *old_player_pos, &mut enemy_sprite);
 
-		let Some((path, _)) = astar(
+		let path = if let Some((path, _)) = astar(
 			enemy_pos,
 			|grid_pos| {
 				OrderedNeighbors::new((*grid_pos).into(), *tile_map_size)
@@ -183,24 +184,52 @@ pub(crate) fn move_enemies(
 			},
 			|start| util::euclidean_distance(*old_player_pos, *start),
 			|current_pos| current_pos == old_player_pos,
-		) else {
+		) {
+			path
+		} else if let Some((path, _)) = astar(
+			enemy_pos,
+			|grid_pos| {
+				OrderedNeighbors::new((*grid_pos).into(), *tile_map_size)
+					.filter_map(|pos| {
+						let walkable = level_cache.destination(doors, *enemy_pos, pos.into());
+						matches!(walkable, Destination::Walkable | Destination::Enemy)
+							.then_some((pos.into(), 1))
+					})
+					.collect::<Vec<_>>()
+			},
+			|start| util::euclidean_distance(*old_player_pos, *start),
+			|current_pos| current_pos == old_player_pos,
+		) {
+			path
+		} else {
 			continue;
 		};
 
 		let destination = path.get(1).expect("found empty path");
 
 		let spell = spellbook
-				.0
-				.get(&0)
-				.expect("there has to be at least one spell in a spellbook").clone();
+			.0
+			.get(&0)
+			.expect("there has to be at least one spell in a spellbook")
+			.clone();
 
 		if old_player_pos == player_pos && destination == player_pos {
 			cast_ability.send(AbilityEvent::new(
 				enemy_entity,
 				spell.id,
 				AbilityEventTarget::Entity(player_entity),
-
 			));
+			return;
+		}
+
+		if level_cache.enemies.contains_key(destination) {
+			if let Some(spell) = spellbook.0.get(&1) {
+				cast_ability.send(AbilityEvent::new(
+					enemy_entity,
+					spell.id,
+					AbilityEventTarget::Entity(player_entity),
+				));
+			}
 			return;
 		}
 
@@ -209,6 +238,7 @@ pub(crate) fn move_enemies(
 		}
 
 		let mut enemy_commands = commands.entity(enemy_entity);
+
 		enemy_commands.insert(Animator::new(
 			Tween::new(
 				EaseMethod::Linear,
