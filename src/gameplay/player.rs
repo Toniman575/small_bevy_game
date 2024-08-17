@@ -15,7 +15,9 @@ use bevy_ecs_tilemap::tiles::TilePos;
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
 
-use super::{AbilityEvent, AbilityEventTarget, ActiveAbility, Health, Spellbook, Vision};
+use super::{
+	AbilityEffect, AbilityEvent, AbilityEventTarget, ActiveAbility, Health, Spellbook, Vision,
+};
 use crate::animation::Animation;
 use crate::{
 	Destination, DoorOpen, GameState, LevelCache, PlayerBusy, PlayerEntityDestination,
@@ -286,7 +288,7 @@ pub(crate) fn door_interactions(
 pub(crate) fn cast_ability(
 	mut inputs: EventReader<'_, '_, MouseButtonInput>,
 	mut abilities: EventWriter<'_, AbilityEvent>,
-	player: Query<'_, '_, (Entity, &Vision, &ActiveAbility, &Spellbook), With<Player>>,
+	player: Query<'_, '_, (Entity, &GridCoords, &Vision, &ActiveAbility, &Spellbook), With<Player>>,
 	targeting_marker: Query<'_, '_, (&GridCoords, &TargetingMarker)>,
 ) {
 	for input in inputs.read() {
@@ -299,25 +301,32 @@ pub(crate) fn cast_ability(
 			continue;
 		};
 
-		let (player_entity, vision, ability, spellbook) = player.single();
+		let (player_entity, player_grid_coords, vision, ability, spellbook) = player.single();
 		let (target_grid_coords, target_marker) = targeting_marker.single();
 
 		if !vision.tiles.contains(target_grid_coords) {
 			continue;
 		}
 
-		if spellbook
+		let spell = spellbook
 			.0
 			.get(&ability.0)
-			.expect("active ability has a non valid ability id")
-			.aoe
-			.is_some()
-		{
+			.expect("active ability has a non valid ability id");
+
+		if spell.aoe.is_some() {
 			abilities.send(AbilityEvent::new(
 				player_entity,
 				ability.0,
 				AbilityEventTarget::Tile(*target_grid_coords),
-			))
+			));
+		} else if let AbilityEffect::Healing(_) = spell.effect {
+			if player_grid_coords == target_grid_coords {
+				abilities.send(AbilityEvent::new(
+					player_entity,
+					ability.0,
+					AbilityEventTarget::Entity(player_entity),
+				));
+			}
 		} else {
 			let Some(target_entity) = target_marker.0 else {
 				return;
@@ -327,7 +336,7 @@ pub(crate) fn cast_ability(
 				player_entity,
 				ability.0,
 				AbilityEventTarget::Entity(target_entity),
-			))
+			));
 		};
 
 		return;

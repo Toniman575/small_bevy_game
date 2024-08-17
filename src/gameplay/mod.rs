@@ -117,8 +117,10 @@ impl AbilityEvent {
 /// What and how an Ability affects.
 #[derive(Reflect, Copy, Clone)]
 pub(crate) enum AbilityEffect {
-	/// Damage.
-	Health(u16),
+	/// Damages enemies.
+	Damage(u16),
+	/// Heals player.
+	Healing(u16),
 	/// Teleports.
 	Teleport,
 }
@@ -209,7 +211,7 @@ impl Spellbook {
 					String::from("Autoattack"),
 					1,
 					None,
-					AbilityEffect::Health(5),
+					AbilityEffect::Damage(5),
 					None,
 				),
 			),
@@ -220,7 +222,7 @@ impl Spellbook {
 					String::from("Ranged"),
 					5,
 					None,
-					AbilityEffect::Health(3),
+					AbilityEffect::Damage(3),
 					None,
 				),
 			),
@@ -231,7 +233,7 @@ impl Spellbook {
 					String::from("Hardcore"),
 					1,
 					None,
-					AbilityEffect::Health(10),
+					AbilityEffect::Damage(10),
 					Some(3),
 				),
 			),
@@ -239,6 +241,17 @@ impl Spellbook {
 				3,
 				Ability::new(
 					3,
+					String::from("Heal"),
+					1,
+					None,
+					AbilityEffect::Healing(10),
+					Some(10),
+				),
+			),
+			(
+				4,
+				Ability::new(
+					4,
 					String::from("Teleport"),
 					5,
 					Some(0),
@@ -259,7 +272,7 @@ impl Spellbook {
 					String::from("Autoattack"),
 					1,
 					None,
-					AbilityEffect::Health(3),
+					AbilityEffect::Damage(3),
 					None,
 				),
 			),
@@ -270,7 +283,7 @@ impl Spellbook {
 					String::from("Ranged"),
 					2,
 					None,
-					AbilityEffect::Health(1),
+					AbilityEffect::Damage(1),
 					None,
 				),
 			),
@@ -321,12 +334,30 @@ pub(crate) fn handle_ability_event(
 			.clone();
 
 		let (target_entity, power) = match ability.effect {
-			AbilityEffect::Health(power) => {
+			AbilityEffect::Damage(power) => {
 				let AbilityEventTarget::Entity(entity) = ability_event.target else {
 					unreachable!("sent teleport spell on an entity")
 				};
 
 				(entity, power)
+			}
+			AbilityEffect::Healing(power) => {
+				if ability.last_cast.is_some() {
+					continue;
+				}
+				
+				let Ok((_, _, _, _, _, mut health, ..)) =
+					entities_q.get_mut(ability_event.caster_entity)
+				else {
+					unreachable!("sent caster entity that doesn't exist")
+				};
+
+				health.current = (health.current + power).min(health.max);
+
+				state.turn += 1;
+				*animation_state = TurnState::EnemiesWaiting;
+
+				continue;
 			}
 			AbilityEffect::Teleport => {
 				let AbilityEventTarget::Tile(target_grid_coord) = ability_event.target else {

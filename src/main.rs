@@ -3,7 +3,6 @@
 //!   - Implement tooltip.
 //!   - Make sure its easy to add new abilities.
 //!   - Add healing abilites.
-//!   - Add displacing abilities.
 //!   - Add defensive abilities.
 //!   - Add buffing abilities.
 //!   - Make enemies use new abilities. Probably with a simple state machine.
@@ -11,6 +10,7 @@
 //!   - Implement bleeding debuff on enemies, think about presentation.
 //!   - Make sure its easy to integrate with abilities and add new ones.
 //! - Bonus
+//!   - Add displacing abilities.
 //!   - Delete `LevelCache`.
 //!   - Let players speed up turns (turn off animations, speed them up etc.).
 //!   - Better horde behavior.
@@ -41,7 +41,6 @@ use std::mem;
 use std::ops::{Deref, DerefMut};
 
 use bevy::color::palettes::basic::*;
-use bevy::color::palettes::css::RED;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
 use bevy::prelude::{AssetServer, *};
@@ -614,7 +613,8 @@ fn update_target_marker(
 	>,
 	level_cache: Res<'_, LevelCache>,
 ) {
-	let (mut marker, mut visibility, mut grid_coords, mut sprite) = target_marker.single_mut();
+	let (mut marker, mut visibility, mut marker_grid_coords, mut sprite) =
+		target_marker.single_mut();
 	let Ok((player_grid_coords, spellbook, active_ability, vision)) = player.get_single() else {
 		return;
 	};
@@ -626,18 +626,18 @@ fn update_target_marker(
 		marker.set_if_neq(TargetingMarker(None));
 	} else {
 		visibility.set_if_neq(Visibility::Inherited);
-		grid_coords.set_if_neq(cursor_pos.tile_pos);
+		marker_grid_coords.set_if_neq(cursor_pos.tile_pos);
 
 		let ability = spellbook
 			.0
 			.get(&active_ability.0)
 			.expect("Player has to have an active ability.");
-		let enemy = level_cache.enemies.get(grid_coords.deref());
+		let enemy = level_cache.enemies.get(marker_grid_coords.deref());
 
 		match &ability.effect {
-			AbilityEffect::Health(_) => {
+			AbilityEffect::Damage(_) => {
 				if let Some(entity) = enemy {
-					if ability.in_euclidean_range(*player_grid_coords, *grid_coords) {
+					if ability.in_euclidean_range(*player_grid_coords, *marker_grid_coords) {
 						sprite.color = RED.into();
 					} else {
 						sprite.color = YELLOW.into();
@@ -649,11 +649,18 @@ fn update_target_marker(
 					marker.set_if_neq(TargetingMarker(None));
 				}
 			}
+			AbilityEffect::Healing(_) => {
+				if *player_grid_coords == *marker_grid_coords {
+					sprite.color = GREEN.into();
+				} else {
+					sprite.color = RED.into();
+				}
+			}
 			AbilityEffect::Teleport => {
 				marker.set_if_neq(TargetingMarker(None));
 
-				if enemy.is_none() && !level_cache.walls.contains(grid_coords.deref()) {
-					if ability.in_euclidean_range(*player_grid_coords, *grid_coords) {
+				if enemy.is_none() && !level_cache.walls.contains(marker_grid_coords.deref()) {
+					if ability.in_euclidean_range(*player_grid_coords, *marker_grid_coords) {
 						sprite.color = RED.into();
 					} else {
 						sprite.color = YELLOW.into();
