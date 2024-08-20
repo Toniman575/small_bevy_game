@@ -31,7 +31,7 @@ pub(crate) struct Health {
 	/// How much health the entity currently has.
 	pub(crate) current: u16,
 	/// How much health the entity can have.
-	max:                u16,
+	pub(crate) max:     u16,
 }
 
 #[allow(clippy::fallible_impl_from)]
@@ -324,14 +324,14 @@ pub(crate) fn handle_ability_event(
 	mut animation_state: ResMut<'_, TurnState>,
 ) {
 	for ability_event in abilities.read() {
-		let ability = entities_q
-			.get(ability_event.caster_entity)
-			.expect("caster not found")
-			.3
+		let (_ , _, _, mut spellbook, _, mut health, ..) = entities_q
+			.get_mut(ability_event.caster_entity)
+			.expect("caster not found");
+
+		let ability = spellbook
 			.0
-			.get(&ability_event.ability)
-			.expect("requested non-existing ability")
-			.clone();
+			.get_mut(&ability_event.ability)
+			.expect("requested non-existing ability");
 
 		let (target_entity, power) = match ability.effect {
 			AbilityEffect::Damage(power) => {
@@ -345,12 +345,10 @@ pub(crate) fn handle_ability_event(
 				if ability.last_cast.is_some() {
 					continue;
 				}
-				
-				let Ok((_, _, _, _, _, mut health, ..)) =
-					entities_q.get_mut(ability_event.caster_entity)
-				else {
-					unreachable!("sent caster entity that doesn't exist")
-				};
+
+				if ability.cooldown.is_some() {
+					ability.last_cast = Some(state.turn);
+				}
 
 				health.current = (health.current + power).min(health.max);
 
@@ -364,7 +362,7 @@ pub(crate) fn handle_ability_event(
 					unreachable!("sent teleport spell on an entity")
 				};
 
-				let (caster_entity, _, mut caster_grid_coord, spellbook, mut sprite, ..) =
+				let (caster_entity, _, mut caster_grid_coord, mut spellbook, mut sprite, ..) =
 					entities_q
 						.get_mut(ability_event.caster_entity)
 						.expect("caster not found");
@@ -372,7 +370,7 @@ pub(crate) fn handle_ability_event(
 
 				let ability = spellbook
 					.0
-					.get(&ability_event.ability)
+					.get_mut(&ability_event.ability)
 					.expect("requested non-existing ability");
 
 				if ability.last_cast.is_some()
@@ -385,12 +383,16 @@ pub(crate) fn handle_ability_event(
 					level_cache.destination(&state.doors, *caster_grid_coord, target_grid_coord)
 				{
 					caster_grid_coord.set_if_neq(target_grid_coord);
+
+					if ability.cooldown.is_some() {
+						ability.last_cast = Some(state.turn);
+					}
+
+					commands.trigger_targets(ArrivedAtTile, caster_entity);
+
+					state.turn += 1;
+					*animation_state = TurnState::EnemiesWaiting;
 				}
-
-				commands.trigger_targets(ArrivedAtTile, caster_entity);
-
-				state.turn += 1;
-				*animation_state = TurnState::EnemiesWaiting;
 
 				continue;
 			}

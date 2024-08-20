@@ -284,11 +284,23 @@ pub(crate) fn door_interactions(
 }
 
 /// Lets player cast an ability with a mouseclick.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 pub(crate) fn cast_ability(
 	mut inputs: EventReader<'_, '_, MouseButtonInput>,
 	mut abilities: EventWriter<'_, AbilityEvent>,
-	player: Query<'_, '_, (Entity, &GridCoords, &Vision, &ActiveAbility, &Spellbook), With<Player>>,
+	player: Query<
+		'_,
+		'_,
+		(
+			Entity,
+			&GridCoords,
+			&Health,
+			&Vision,
+			&ActiveAbility,
+			&Spellbook,
+		),
+		With<Player>,
+	>,
 	targeting_marker: Query<'_, '_, (&GridCoords, &TargetingMarker)>,
 ) {
 	for input in inputs.read() {
@@ -301,7 +313,8 @@ pub(crate) fn cast_ability(
 			continue;
 		};
 
-		let (player_entity, player_grid_coords, vision, ability, spellbook) = player.single();
+		let (player_entity, player_grid_coords, health, vision, ability, spellbook) =
+			player.single();
 		let (target_grid_coords, target_marker) = targeting_marker.single();
 
 		if !vision.tiles.contains(target_grid_coords) {
@@ -320,7 +333,7 @@ pub(crate) fn cast_ability(
 				AbilityEventTarget::Tile(*target_grid_coords),
 			));
 		} else if let AbilityEffect::Healing(_) = spell.effect {
-			if player_grid_coords == target_grid_coords {
+			if player_grid_coords == target_grid_coords && health.current != health.max {
 				abilities.send(AbilityEvent::new(
 					player_entity,
 					ability.0,

@@ -8,7 +8,7 @@ use bevy_ecs_ldtk::{GridCoords, LevelSelection};
 use bevy_ecs_tilemap::tiles::{TileColor, TileVisible};
 
 use crate::gameplay::{Enemy, Player, Vision};
-use crate::{util, Debug, GameState, Key, LevelCache};
+use crate::{util, Debug, Door, GameState, Key, LevelCache};
 
 /// Calculates the field of view from an entity with [`Vision`].
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
@@ -87,6 +87,7 @@ pub(crate) fn apply_fow(
 			&mut Sprite,
 			Has<Key>,
 			Has<Enemy>,
+			Has<Door>,
 		),
 		Without<Player>,
 	>,
@@ -128,16 +129,29 @@ pub(crate) fn apply_fow(
 		}
 	}
 
-	for (entity, grid_coords, mut visibility, mut sprite, has_key, has_enemy) in
+	'outer: for (entity, grid_coords, mut visibility, mut sprite, has_key, has_enemy, has_door) in
 		&mut other_visible_q
 	{
 		if has_key && !level_cache.keys.contains_key(grid_coords) {
 			continue;
 		}
 
-		if matches!(debug.deref(), Debug::Active { .. })
-			|| player_vision.tiles.contains(grid_coords)
-		{
+		if matches!(debug.deref(), Debug::Active { .. }) {
+			visibility.set_if_neq(Visibility::Inherited);
+
+			if has_door {
+				for vision in &enemies_q {
+					for tile in &vision.tiles {
+						if tile == grid_coords {
+							sprite.color = Color::Srgba(RED);
+							continue 'outer;
+						}
+					}
+				}
+			}
+
+			sprite.color = Color::Srgba(WHITE);
+		} else if player_vision.tiles.contains(grid_coords) {
 			visibility.set_if_neq(Visibility::Inherited);
 			sprite.color = Color::Srgba(WHITE);
 		} else if (!has_enemy || player_vision.memory.contains_key(&entity))

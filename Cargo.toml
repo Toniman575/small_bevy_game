@@ -10,7 +10,7 @@ bevy-inspector-egui = "0.25"
 bevy_ecs_ldtk = "0.10"
 bevy_ecs_tilemap = { version = "0.14", default-features = false }
 bevy_egui = "0.28"
-bevy_pancam = { version = "0.12", features = ["bevy_egui"] }
+bevy_pancam = { version = "0.13", features = ["bevy_egui"] }
 bevy_tweening = "0.11"
 num-traits = "0.2"
 pathfinding = "4"
@@ -18,7 +18,7 @@ symmetric-shadowcasting = "0.2"
 
 [patch.crates-io]
 bevy_input = { git = "https://github.com/daxpedda/bevy", branch = "small-bevy-game" }
-bevy_pancam = { git = "https://github.com/Toniman575/bevy_pancam", branch = "keyboard-movement" }
+bevy_pancam = { git = "https://github.com/johanhelsing/bevy_pancam", rev = "ec828f4a5ba5131c209936d8463ba071bcf365c5" }
 bevy_winit = { git = "https://github.com/daxpedda/bevy", branch = "small-bevy-game" }
 
 [features]

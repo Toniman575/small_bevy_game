@@ -2,9 +2,9 @@
 //! - Abilities
 //!   - Implement tooltip.
 //!   - Make sure its easy to add new abilities.
-//!   - Add healing abilites.
 //!   - Add defensive abilities.
 //!   - Add buffing abilities.
+//!   - Add resources for abilities.
 //!   - Make enemies use new abilities. Probably with a simple state machine.
 //! - Debuffs
 //!   - Implement bleeding debuff on enemies, think about presentation.
@@ -53,7 +53,7 @@ use bevy_egui::egui::{Margin, TextWrapMode, TopBottomPanel};
 use bevy_egui::{egui, EguiPlugin, EguiSet};
 use bevy_inspector_egui::bevy_egui::EguiContexts;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
-use bevy_pancam::{MoveMode, PanCam, PanCamPlugin};
+use bevy_pancam::{DirectionKeys, PanCam, PanCamPlugin};
 use bevy_tweening::{Animator, TweeningPlugin};
 use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
@@ -281,11 +281,11 @@ fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
 	let mut camera = Camera2dBundle::default();
 	camera.projection.scale = 0.5;
 	commands.spawn(camera).insert(PanCam {
-		move_mode: MoveMode::Mouse,
+		move_keys: DirectionKeys::NONE,
 		grab_buttons: Vec::new(),
 		zoom_to_cursor: false,
 		min_scale: 0.1,
-		max_scale: Some(1.),
+		max_scale: 1.,
 		..PanCam::default()
 	});
 
@@ -599,7 +599,12 @@ fn update_cursor_pos(
 #[allow(clippy::needless_pass_by_value)]
 fn update_target_marker(
 	cursor_pos: Res<'_, CursorPos>,
-	player: Query<'_, '_, (&GridCoords, &Spellbook, &ActiveAbility, &Vision), With<Player>>,
+	player: Query<
+		'_,
+		'_,
+		(&GridCoords, &Health, &Spellbook, &ActiveAbility, &Vision),
+		With<Player>,
+	>,
 	mut target_marker: Query<
 		'_,
 		'_,
@@ -615,7 +620,8 @@ fn update_target_marker(
 ) {
 	let (mut marker, mut visibility, mut marker_grid_coords, mut sprite) =
 		target_marker.single_mut();
-	let Ok((player_grid_coords, spellbook, active_ability, vision)) = player.get_single() else {
+	let Ok((player_grid_coords, health, spellbook, active_ability, vision)) = player.get_single()
+	else {
 		return;
 	};
 
@@ -650,7 +656,7 @@ fn update_target_marker(
 				}
 			}
 			AbilityEffect::Healing(_) => {
-				if *player_grid_coords == *marker_grid_coords {
+				if *player_grid_coords == *marker_grid_coords && health.current != health.max {
 					sprite.color = GREEN.into();
 				} else {
 					sprite.color = RED.into();
