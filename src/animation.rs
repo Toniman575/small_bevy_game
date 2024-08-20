@@ -24,6 +24,10 @@ pub(crate) struct Animation {
 	pub anchor:    Option<Anchor>,
 }
 
+/// Ability Animation.
+#[derive(Clone, Component)]
+pub(crate) struct AnimationAbility;
+
 /// Animate entities.
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn animate(
@@ -68,12 +72,13 @@ pub(crate) fn finish_animation(
 		(
 			Entity,
 			&Transform,
-			&mut GridCoords,
-			&mut TextureAtlas,
-			&mut Animation,
+			Option<&mut GridCoords>,
+			Option<&mut TextureAtlas>,
+			Option<&mut Animation>,
 			&mut Visibility,
 			Has<Player>,
 			Has<Enemy>,
+			Has<AnimationAbility>,
 		),
 	>,
 ) {
@@ -85,19 +90,28 @@ pub(crate) fn finish_animation(
 		let (
 			entity,
 			transform,
-			mut grid_coord,
-			mut atlas,
-			mut animation,
+			grid_coord,
+			atlas,
+			animation,
 			mut visibility,
 			has_player,
 			has_enemy,
+			is_ability_animation,
 		) = query.get_mut(completed.entity).unwrap();
 
+		if is_ability_animation {
+			commands.entity(entity).despawn_recursive();
+			continue;
+		}
+
+		let mut grid_coord = grid_coord.unwrap();
 		*grid_coord =
 			utils::translation_to_grid_coords(transform.translation.xy(), IVec2::splat(GRID_SIZE));
 
 		// Transition to next state
 		*turn_state = TurnState::EnemiesWaiting;
+
+		let mut animation = animation.unwrap();
 
 		// Transition back to idle animation.
 		if has_player {
@@ -108,7 +122,7 @@ pub(crate) fn finish_animation(
 			unreachable!("found unknown entity");
 		}
 
-		atlas.index = animation.first;
+		atlas.unwrap().index = animation.first;
 		commands
 			.entity(completed.entity)
 			.remove::<Animator<Transform>>();

@@ -19,10 +19,11 @@ pub(crate) use self::enemy::{move_enemies, Enemy, EnemyBundle};
 pub(crate) use self::player::{
 	cast_ability, door_interactions, player_movement, select_ability, Player, PlayerBundle,
 };
-use crate::animation::{Animation, ArrivedAtTile};
+use crate::animation::{AnimationAbility, Animation, ArrivedAtTile};
 use crate::util::{flip_sprite, OrderedNeighbors};
 use crate::{
-	util, Destination, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, TurnState,
+	util, Destination, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, Textures,
+	TurnState,
 };
 
 /// Component for tracking health in entities.
@@ -127,6 +128,15 @@ pub(crate) enum AbilityEffect {
 	Teleport,
 }
 
+/// Holds animation data.
+#[derive(Reflect, Clone)]
+struct AbilityAnimation {
+	/// Animation texture handle.
+	texture: Handle<Image>,
+	/// Animation duration.
+	duration: Duration,
+}
+
 /// An ability an entity can perform.
 #[derive(Reflect, Clone)]
 pub(crate) struct Ability {
@@ -144,6 +154,8 @@ pub(crate) struct Ability {
 	cooldown:             Option<u8>,
 	/// When this ability was last cast.
 	pub(crate) last_cast: Option<u64>,
+	/// Animation data.
+	pub(crate) animation: Option<AbilityAnimation>,
 }
 
 impl Ability {
@@ -155,6 +167,7 @@ impl Ability {
 		aoe: Option<u8>,
 		effect: AbilityEffect,
 		cooldown: Option<u8>,
+		animation:  Option<AbilityAnimation>,
 	) -> Self {
 		Self {
 			id,
@@ -164,6 +177,8 @@ impl Ability {
 			effect,
 			cooldown,
 			last_cast: None,
+			animation,
+			
 		}
 	}
 
@@ -244,6 +259,7 @@ impl Spellbook {
 					None,
 					AbilityEffect::Damage(5),
 					None,
+					None,
 				),
 			),
 			(
@@ -254,6 +270,7 @@ impl Spellbook {
 					5,
 					None,
 					AbilityEffect::Damage(3),
+					None,
 					None,
 				),
 			),
@@ -266,6 +283,7 @@ impl Spellbook {
 					None,
 					AbilityEffect::Damage(10),
 					Some(3),
+					None,
 				),
 			),
 			(
@@ -277,6 +295,7 @@ impl Spellbook {
 					None,
 					AbilityEffect::Healing(10),
 					Some(10),
+					None,
 				),
 			),
 			(
@@ -287,6 +306,7 @@ impl Spellbook {
 					5,
 					Some(0),
 					AbilityEffect::Teleport,
+					None,
 					None,
 				),
 			),
@@ -299,6 +319,7 @@ impl Spellbook {
 					None,
 					AbilityEffect::Buff(Buff::new(0.75, 3)),
 					Some(5),
+					None,
 				),
 			),
 		]))
@@ -316,6 +337,7 @@ impl Spellbook {
 					None,
 					AbilityEffect::Damage(3),
 					None,
+					None,
 				),
 			),
 			(
@@ -326,6 +348,7 @@ impl Spellbook {
 					2,
 					None,
 					AbilityEffect::Damage(1),
+					None,
 					None,
 				),
 			),
@@ -341,7 +364,8 @@ pub(crate) struct ActiveAbility(pub(crate) u64);
 #[allow(
 	clippy::needless_pass_by_value,
 	clippy::too_many_lines,
-	clippy::type_complexity
+	clippy::type_complexity,
+	clippy::too_many_arguments
 )]
 pub(crate) fn handle_ability_event(
 	mut commands: Commands<'_, '_>,
@@ -365,6 +389,7 @@ pub(crate) fn handle_ability_event(
 	level_cache: ResMut<'_, LevelCache>,
 	mut abilities: EventReader<'_, '_, AbilityEvent>,
 	mut animation_state: ResMut<'_, TurnState>,
+	handles: Res<'_, Textures>,
 ) {
 	for ability_event in abilities.read() {
 		let (_, _, _, mut spellbook, _, mut health, ..) = entities_q
@@ -531,6 +556,33 @@ pub(crate) fn handle_ability_event(
 			),
 		),));
 
+		let to_enemy = (target_transform.translation.xy() - caster_transform.translation.xy()).normalize();
+		let rotate_to_enemy = Quat::from_rotation_arc(Vec3::Y, to_enemy.extend(0.));
+
+		commands.spawn((
+			AnimationAbility,
+			SpriteBundle {
+				texture: handles.arrow.clone(),
+				transform: Transform {
+					translation: caster_transform.translation,
+					rotation:    rotate_to_enemy,
+					..Transform::default()
+				},
+				..SpriteBundle::default()
+			},
+			Animator::new(
+				Tween::new(
+					EaseMethod::Linear,
+					Duration::from_secs_f64(0.2),
+					TransformPositionLens {
+						start: caster_transform.translation,
+						end:   target_transform.translation,
+					},
+				)
+				.with_completed_event(0),
+			),
+		));
+
 		if ability.cooldown.is_some() {
 			ability.last_cast = Some(state.turn);
 		}
@@ -639,7 +691,7 @@ pub(crate) fn tick_buff(
 )]
 pub(crate) fn death(
 	mut commands: Commands<'_, '_>,
-	asset_server: Res<'_, AssetServer>,
+	textures: Res<'_, Textures>,
 	mut deaths: EventReader<'_, '_, DeathEvent>,
 	player_q: Query<'_, '_, &Vision, With<Player>>,
 	mut animations: Query<
@@ -754,9 +806,6 @@ pub(crate) fn death(
 						}
 					}
 
-					let key_texture =
-						asset_server.load::<Image>("Environment/Dungeon Prison/Assets/Props.png");
-
 					let entity = commands
 						.spawn((
 							Name::new("Key"),
@@ -768,7 +817,7 @@ pub(crate) fn death(
 									rect: Some(Rect::new(32., 64., 48., 80.)),
 									..Sprite::default()
 								},
-								texture: key_texture,
+								texture: textures.props.clone(),
 								visibility: if player_vision.tiles.contains(&grid_coords) {
 									Visibility::default()
 								} else {

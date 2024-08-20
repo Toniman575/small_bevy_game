@@ -49,7 +49,7 @@ use bevy::window::PrimaryWindow;
 use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
 use bevy_ecs_tilemap::prelude::*;
-use bevy_egui::egui::{Margin, TextWrapMode, TopBottomPanel};
+use bevy_egui::egui::{Margin, TextWrapMode, TextureId, TopBottomPanel};
 use bevy_egui::{egui, EguiPlugin, EguiSet};
 use bevy_inspector_egui::bevy_egui::EguiContexts;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
@@ -278,7 +278,8 @@ enum Destination {
 
 /// Startup system.
 #[allow(clippy::needless_pass_by_value)]
-fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
+fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>, 	mut contexts: EguiContexts<'_, '_>,
+) {
 	let mut camera = Camera2dBundle::default();
 	camera.projection.scale = 0.5;
 	commands.spawn(camera).insert(PanCam {
@@ -311,6 +312,26 @@ fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
 		GridCoords::default(),
 		Name::new("Tile Target Marker"),
 	));
+
+	let props = asset_server.load("Environment/Dungeon Prison/Assets/Props.png");
+	let props_id = contexts.add_image(props.clone_weak());
+	let arrow = asset_server.load::<Image>("arrow.webp");
+	let slash = asset_server.load::<Image>("slash.webp");
+
+	commands.insert_resource(Textures { props, props_id, arrow, slash });
+}
+
+/// Stores textures we need throughout the game.
+#[derive(Resource)]
+struct Textures {
+	/// Dungeon tileset props.
+	props: Handle<Image>,
+	/// EGUI texture handle to the dungeon tileset props.
+	props_id: TextureId,
+	/// Arrow texture.
+	arrow: Handle<Image>,
+	/// Slash attack texture.
+	slash: Handle<Image>,
 }
 
 /// Initialize states after level is spawned.
@@ -726,13 +747,10 @@ fn translate_grid_coords_entities(
 /// Item UI.
 #[allow(clippy::needless_pass_by_value)]
 fn item_ui(
-	asset_server: Res<'_, AssetServer>,
+	textures: Res<'_, Textures>,
 	state: Res<'_, GameState>,
 	mut contexts: EguiContexts<'_, '_>,
 ) {
-	let key_texture =
-		contexts.add_image(asset_server.load("Environment/Dungeon Prison/Assets/Props.png"));
-
 	let Some(context) = contexts.try_ctx_mut() else {
 		return;
 	};
@@ -759,7 +777,7 @@ fn item_ui(
 							);
 
 							painter.image(
-								key_texture,
+								textures.props_id,
 								response.rect,
 								egui::Rect::from([
 									Pos2::new(1. / 400. * 32., 1. / 400. * 64.),
