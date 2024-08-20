@@ -114,6 +114,7 @@ pub(crate) fn player_movement(
 			&ActiveAbility,
 			&Transform,
 			&GridCoords,
+			&Spellbook,
 			&mut Sprite,
 			&mut TextureAtlas,
 			&mut Animation,
@@ -169,6 +170,7 @@ pub(crate) fn player_movement(
 			active_ability,
 			transform,
 			grid_pos,
+			spellbook,
 			mut sprite,
 			mut atlas,
 			mut animation,
@@ -206,11 +208,18 @@ pub(crate) fn player_movement(
 			}
 			Destination::Wall => (),
 			Destination::Enemy => {
-				cast_ability.send(AbilityEvent::new(
-					player_entity,
-					active_ability.0,
-					AbilityEventTarget::Entity(*level_cache.enemies.get(&destination).unwrap()),
-				));
+				let ability = spellbook
+					.0
+					.get(&active_ability.0)
+					.expect("invalid active ability");
+
+				if let AbilityEffect::Damage(_) = ability.effect {
+					cast_ability.send(AbilityEvent::new(
+						player_entity,
+						active_ability.0,
+						AbilityEventTarget::Entity(*level_cache.enemies.get(&destination).unwrap()),
+					));
+				}
 			}
 			Destination::Door(door) => {
 				if let LevelSelection::Iid(current_level) = level_selection.as_mut() {
@@ -334,6 +343,14 @@ pub(crate) fn cast_ability(
 			));
 		} else if let AbilityEffect::Healing(_) = spell.effect {
 			if player_grid_coords == target_grid_coords && health.current != health.max {
+				abilities.send(AbilityEvent::new(
+					player_entity,
+					ability.0,
+					AbilityEventTarget::Entity(player_entity),
+				));
+			}
+		} else if let AbilityEffect::Buff(_) = spell.effect {
+			if player_grid_coords == target_grid_coords {
 				abilities.send(AbilityEvent::new(
 					player_entity,
 					ability.0,

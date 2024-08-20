@@ -59,6 +59,7 @@ use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
 	SidePanel, Stroke, Widget,
 };
+use gameplay::{tick_buff, Buff};
 
 use self::fow::{generate_fov, ApplyFoW};
 use self::gameplay::{
@@ -675,6 +676,13 @@ fn update_target_marker(
 					sprite.color = Color::WHITE;
 				}
 			}
+			AbilityEffect::Buff(_) => {
+				if *player_grid_coords == *marker_grid_coords {
+					sprite.color = GREEN.into();
+				} else {
+					sprite.color = RED.into();
+				}
+			}
 		}
 	}
 }
@@ -823,11 +831,11 @@ fn turn_ui(state: Res<'_, GameState>, mut contexts: EguiContexts<'_, '_>) {
 /// Abilities UI.
 #[allow(clippy::needless_pass_by_value)]
 fn ability_ui(
-	player: Query<'_, '_, (&Spellbook, &ActiveAbility), With<Player>>,
+	mut player: Query<'_, '_, (&Spellbook, &mut ActiveAbility), With<Player>>,
 	mut contexts: EguiContexts<'_, '_>,
 	state: Res<'_, GameState>,
 ) {
-	let Ok((spellbook, active_ability)) = player.get_single() else {
+	let Ok((spellbook, mut active_ability)) = player.get_single_mut() else {
 		return;
 	};
 
@@ -835,25 +843,114 @@ fn ability_ui(
 		return;
 	};
 
-	TopBottomPanel::bottom("abilities").show(context, |ui| {
-		ui.horizontal(|ui| {
-			for ((_, ability), button) in spellbook.0.iter().zip(1..) {
-				let mut text = format!("{}. {}", button, ability.name);
-				let mut color = None;
+	TopBottomPanel::bottom("abilities")
+		.show_separator_line(false)
+		.frame(Frame::none())
+		.show(context, |ui| {
+			ui.horizontal(|ui| {
+				#[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+				let range = spellbook.0.len() as f32 * 68.;
+				let padding = (context.screen_rect().width() - range) / 2.;
+				ui.add_space(padding);
 
-				if let Some(cooldown_left) = ability.cooldown_left(state.turn) {
-					text = format!("{text} ({cooldown_left})");
-					color = Some(Color32::RED);
-				}
+				ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
 
-				if ability.id == active_ability.0 {
-					ui.label(RichText::new(text).color(color.unwrap_or(Color32::GREEN)));
-				} else {
-					ui.label(RichText::new(text).color(color.unwrap_or(Color32::YELLOW)));
+				for ((id, ability), button) in spellbook.0.iter().zip(1..) {
+					let ability_color = if ability.id == active_ability.0 {
+						Color32::GREEN
+					} else {
+						Color32::WHITE
+					};
+
+					#[allow(clippy::option_if_let_else)]
+					let (text, text_color) = if let Some(cooldown_left) = ability.cooldown_left(state.turn) {
+						(&format!("{} ({cooldown_left})", ability.name), Color32::RED)
+					} else {
+						(&ability.name, Color32::WHITE)
+					};
+
+					let response = Frame::default()
+						.fill(Color32::BLACK)
+						.stroke(Stroke::new(2., ability_color))
+						.rounding(5.)
+						.outer_margin(Margin::symmetric(2., 2.))
+						.show(ui, |ui| {
+							let (response, painter) = ui.allocate_painter(
+								egui::Vec2::new(64., 64.),
+								Sense {
+									click:     false,
+									drag:      false,
+									focusable: false,
+								},
+							);
+
+							/*painter.image(
+								key_texture,
+								response.rect,
+								egui::Rect::from([
+									Pos2::new(1. / 400. * 32., 1. / 400. * 64.),
+									Pos2::new(1. / 400. * 48., 1. / 400. * 80.),
+								]),
+								Color32::WHITE,
+							);*/
+
+							// Text shadow.
+							painter.text(
+								(response.rect.right_top() - Pos2::new(4., -4.)).to_pos2(),
+								Align2::RIGHT_TOP,
+								text,
+								FontId {
+									size: 12.,
+									..FontId::default()
+								},
+								Color32::BLACK,
+							);
+
+							painter.text(
+								(response.rect.right_top() - Pos2::new(2., -2.)).to_pos2(),
+								Align2::RIGHT_TOP,
+								text,
+								FontId {
+									size: 12.,
+									..FontId::default()
+								},
+								text_color,
+							);
+
+							// Text shadow.
+							painter.text(
+								response.rect.left_bottom() + egui::Vec2::new(4., -4.),
+								Align2::LEFT_BOTTOM,
+								button,
+								FontId {
+									size: 12.,
+									..FontId::default()
+								},
+								Color32::BLACK,
+							);
+
+							painter.text(
+								response.rect.left_bottom() + egui::Vec2::new(2., -2.),
+								Align2::LEFT_BOTTOM,
+								button,
+								FontId {
+									size: 12.,
+									..FontId::default()
+								},
+								Color32::WHITE,
+							);
+
+							response
+						})
+						.response
+						.interact(Sense::click());
+
+					if response.clicked() {
+						active_ability.0 = *id;
+					}
 				}
-			}
+			})
 		});
-	});
 }
 
 fn main() {
@@ -895,6 +992,7 @@ fn main() {
 			PostUpdate,
 			(
 				tick_cooldowns,
+				tick_buff,
 				(turn_ui, item_ui, ability_ui).before(EguiSet::ProcessOutput),
 				animation::animate,
 				(
@@ -927,6 +1025,7 @@ fn main() {
 		.register_ldtk_int_cell::<WallBundle>(1)
 		.register_type::<Door>()
 		.register_type::<Drops>()
+		.register_type::<Buff>()
 		.register_type::<Health>()
 		.register_type::<LevelCache>()
 		.register_type::<GameState>()

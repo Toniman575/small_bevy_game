@@ -121,6 +121,8 @@ pub(crate) enum AbilityEffect {
 	Damage(u16),
 	/// Heals player.
 	Healing(u16),
+	/// Buffs player.
+	Buff(Buff),
 	/// Teleports.
 	Teleport,
 }
@@ -192,8 +194,37 @@ impl Ability {
 			(cooldown_left > 0).then_some(cooldown_left)
 		})
 	}
+}
 
-	//fn get_animation(&self) -> impl Tweenable<TransformPositionLens> {}
+/// A buff.
+#[derive(Reflect, Copy, Clone, Component)]
+pub(crate) struct Buff {
+	/// The power of the buff.
+	pub(crate) power:     f32,
+	/// How many turns the buff lasts.
+	pub(crate) length:    u64,
+	/// When the buff was cast.
+	pub(crate) last_cast: Option<u64>,
+}
+
+impl Buff {
+	/// Creates a [`Buff`].
+	const fn new(power: f32, length: u64) -> Self {
+		Self {
+			power,
+			length,
+			last_cast: None,
+		}
+	}
+
+	/// Calculates how many turns are left for this buff.
+	pub(crate) fn turns_left(&self, current_turn: u64) -> Option<u64> {
+		self.last_cast.and_then(|last_cast| {
+			let turns_left = (last_cast + self.length).saturating_sub(current_turn);
+
+			(turns_left > 0).then_some(turns_left)
+		})
+	}
 }
 
 /// The collection of abilities an entity can perform.
@@ -259,6 +290,17 @@ impl Spellbook {
 					None,
 				),
 			),
+			(
+				5,
+				Ability::new(
+					5,
+					String::from("Buff"),
+					1,
+					None,
+					AbilityEffect::Buff(Buff::new(0.75, 3)),
+					Some(5),
+				),
+			),
 		]))
 	}
 
@@ -315,6 +357,7 @@ pub(crate) fn handle_ability_event(
 			&mut Sprite,
 			&mut Health,
 			&mut Vision,
+			Option<&Buff>,
 			Has<Player>,
 			Has<Enemy>,
 		),
@@ -324,7 +367,7 @@ pub(crate) fn handle_ability_event(
 	mut animation_state: ResMut<'_, TurnState>,
 ) {
 	for ability_event in abilities.read() {
-		let (_ , _, _, mut spellbook, _, mut health, ..) = entities_q
+		let (_, _, _, mut spellbook, _, mut health, ..) = entities_q
 			.get_mut(ability_event.caster_entity)
 			.expect("caster not found");
 
@@ -332,6 +375,10 @@ pub(crate) fn handle_ability_event(
 			.0
 			.get_mut(&ability_event.ability)
 			.expect("requested non-existing ability");
+
+		if ability.last_cast.is_some() {
+			continue;
+		}
 
 		let (target_entity, power) = match ability.effect {
 			AbilityEffect::Damage(power) => {
@@ -342,10 +389,6 @@ pub(crate) fn handle_ability_event(
 				(entity, power)
 			}
 			AbilityEffect::Healing(power) => {
-				if ability.last_cast.is_some() {
-					continue;
-				}
-
 				if ability.cooldown.is_some() {
 					ability.last_cast = Some(state.turn);
 				}
@@ -373,9 +416,7 @@ pub(crate) fn handle_ability_event(
 					.get_mut(&ability_event.ability)
 					.expect("requested non-existing ability");
 
-				if ability.last_cast.is_some()
-					|| !ability.in_euclidean_range(*caster_grid_coord, target_grid_coord)
-				{
+				if !ability.in_euclidean_range(*caster_grid_coord, target_grid_coord) {
 					continue;
 				}
 
@@ -396,6 +437,20 @@ pub(crate) fn handle_ability_event(
 
 				continue;
 			}
+			AbilityEffect::Buff(mut buff) => {
+				if ability.cooldown.is_some() {
+					ability.last_cast = Some(state.turn);
+				}
+
+				buff.last_cast = Some(state.turn);
+
+				commands.entity(ability_event.caster_entity).insert(buff);
+
+				state.turn += 1;
+				*animation_state = TurnState::EnemiesWaiting;
+
+				continue;
+			}
 		};
 
 		let [
@@ -407,10 +462,21 @@ pub(crate) fn handle_ability_event(
 				mut sprite,
 				_,
 				_,
+				_,
 				caster_is_player,
 				caster_is_enemy,
 			),
-			(_, target_transform, target_grid_coord, _, _, mut target_health, mut vision, ..),
+			(
+				_,
+				target_transform,
+				target_grid_coord,
+				_,
+				_,
+				mut target_health,
+				mut vision,
+				target_buff,
+				..,
+			),
 		] = entities_q.many_mut([ability_event.caster_entity, target_entity]);
 
 		flip_sprite(*caster_grid_coord, *target_grid_coord, &mut sprite);
@@ -420,9 +486,7 @@ pub(crate) fn handle_ability_event(
 			.get_mut(&ability_event.ability)
 			.expect("requested non-existing ability");
 
-		if ability.last_cast.is_some()
-			|| !ability.in_euclidean_range(*caster_grid_coord, *target_grid_coord)
-		{
+		if !ability.in_euclidean_range(*caster_grid_coord, *target_grid_coord) {
 			continue;
 		}
 
@@ -437,7 +501,9 @@ pub(crate) fn handle_ability_event(
 			unreachable!("entity has to be enemy or player");
 		}
 
-		target_health.current = target_health.current.saturating_sub(power);
+		let power_modifier = target_buff.map_or(1, |buff| buff.power as u16);
+
+		target_health.current = target_health.current.saturating_sub(power * power_modifier);
 		let target = caster_transform.translation
 			+ ((target_transform.translation.xy() - caster_transform.translation.xy()).normalize()
 				* 5.)
@@ -543,6 +609,22 @@ pub(crate) fn tick_cooldowns(
 				if ability.cooldown_left(state.turn).is_none() {
 					ability.last_cast = None;
 				}
+			}
+		}
+	}
+}
+
+/// Ticks buffs currently on cooldown.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn tick_buff(
+	mut commands: Commands<'_, '_>,
+	state: ResMut<'_, GameState>,
+	buffs: Query<'_, '_, (Entity, &Buff)>,
+) {
+	if state.is_changed() {
+		for (entity, buff) in &buffs {
+			if buff.turns_left(state.turn).is_none() {
+				commands.entity(entity).remove::<Buff>();
 			}
 		}
 	}
