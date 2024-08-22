@@ -207,26 +207,28 @@ pub(crate) fn move_enemies(
 
 		let destination = path.get(1).expect("found empty path");
 
-		let spell = spellbook
-			.0
-			.get(&0)
-			.expect("there has to be at least one spell in a spellbook")
-			.clone();
+		let (ability_id, _) = spellbook
+			.abilities
+			.get_key_value(&spellbook.autoattack_melee)
+			.expect("there has to be a melee autoattack");
 
 		if old_player_pos == player_pos && destination == player_pos {
 			cast_ability.send(AbilityEvent::new(
 				enemy_entity,
-				spell.id,
+				*ability_id,
 				AbilityEventTarget::Entity(player_entity),
 			));
 			return;
 		}
 
 		if level_cache.enemies.contains_key(destination) {
-			if let Some(spell) = spellbook.0.get(&1) {
+			if let Some((ability_id, _)) = spellbook
+				.abilities
+				.get_key_value(&spellbook.autoattack_ranged)
+			{
 				cast_ability.send(AbilityEvent::new(
 					enemy_entity,
-					spell.id,
+					*ability_id,
 					AbilityEventTarget::Entity(player_entity),
 				));
 			}

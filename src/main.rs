@@ -59,7 +59,7 @@ use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
 	SidePanel, Stroke, Widget,
 };
-use gameplay::{tick_buff, Buff};
+use gameplay::{tick_buff, Abilities, Buff};
 
 use self::fow::{generate_fov, ApplyFoW};
 use self::gameplay::{
@@ -278,7 +278,10 @@ enum Destination {
 
 /// Startup system.
 #[allow(clippy::needless_pass_by_value)]
-fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>, 	mut contexts: EguiContexts<'_, '_>,
+fn startup(
+	mut commands: Commands<'_, '_>,
+	asset_server: Res<'_, AssetServer>,
+	mut contexts: EguiContexts<'_, '_>,
 ) {
 	let mut camera = Camera2dBundle::default();
 	camera.projection.scale = 0.5;
@@ -318,20 +321,28 @@ fn startup(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>, 	
 	let arrow = asset_server.load::<Image>("arrow.webp");
 	let slash = asset_server.load::<Image>("slash.webp");
 
-	commands.insert_resource(Textures { props, props_id, arrow, slash });
+	let textures = Textures {
+		props,
+		props_id,
+		arrow,
+		slash,
+	};
+
+	commands.insert_resource(Abilities::new(&textures));
+	commands.insert_resource(textures);
 }
 
 /// Stores textures we need throughout the game.
 #[derive(Resource)]
 struct Textures {
 	/// Dungeon tileset props.
-	props: Handle<Image>,
+	props:    Handle<Image>,
 	/// EGUI texture handle to the dungeon tileset props.
 	props_id: TextureId,
 	/// Arrow texture.
-	arrow: Handle<Image>,
+	arrow:    Handle<Image>,
 	/// Slash attack texture.
-	slash: Handle<Image>,
+	slash:    Handle<Image>,
 }
 
 /// Initialize states after level is spawned.
@@ -621,12 +632,7 @@ fn update_cursor_pos(
 #[allow(clippy::needless_pass_by_value)]
 fn update_target_marker(
 	cursor_pos: Res<'_, CursorPos>,
-	player: Query<
-		'_,
-		'_,
-		(&GridCoords, &Health, &Spellbook, &ActiveAbility, &Vision),
-		With<Player>,
-	>,
+	player: Query<'_, '_, (&GridCoords, &Health, &ActiveAbility, &Vision), With<Player>>,
 	mut target_marker: Query<
 		'_,
 		'_,
@@ -639,11 +645,11 @@ fn update_target_marker(
 		Without<Player>,
 	>,
 	level_cache: Res<'_, LevelCache>,
+	abilites: Res<'_, Abilities>,
 ) {
 	let (mut marker, mut visibility, mut marker_grid_coords, mut sprite) =
 		target_marker.single_mut();
-	let Ok((player_grid_coords, health, spellbook, active_ability, vision)) = player.get_single()
-	else {
+	let Ok((player_grid_coords, health, active_ability, vision)) = player.get_single() else {
 		return;
 	};
 
@@ -656,7 +662,7 @@ fn update_target_marker(
 		visibility.set_if_neq(Visibility::Inherited);
 		marker_grid_coords.set_if_neq(cursor_pos.tile_pos);
 
-		let ability = spellbook
+		let ability = abilites
 			.0
 			.get(&active_ability.0)
 			.expect("Player has to have an active ability.");
@@ -850,6 +856,7 @@ fn turn_ui(state: Res<'_, GameState>, mut contexts: EguiContexts<'_, '_>) {
 #[allow(clippy::needless_pass_by_value)]
 fn ability_ui(
 	mut player: Query<'_, '_, (&Spellbook, &mut ActiveAbility), With<Player>>,
+	abilites: Res<'_, Abilities>,
 	mut contexts: EguiContexts<'_, '_>,
 	state: Res<'_, GameState>,
 ) {
@@ -867,21 +874,29 @@ fn ability_ui(
 		.show(context, |ui| {
 			ui.horizontal(|ui| {
 				#[allow(clippy::as_conversions, clippy::cast_precision_loss)]
-				let range = spellbook.0.len() as f32 * 68.;
+				let range = spellbook.abilities.len() as f32 * 68.;
 				let padding = (context.screen_rect().width() - range) / 2.;
 				ui.add_space(padding);
 
 				ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
 
-				for ((id, ability), button) in spellbook.0.iter().zip(1..) {
-					let ability_color = if ability.id == active_ability.0 {
+				let mut sorted_spellbook = spellbook.abilities.iter().collect::<Vec<_>>();
+
+				sorted_spellbook.sort_by(|(id1, _), (id2, _)| (id1).partial_cmp(id2).unwrap());
+
+				for ((id, spellbook_ability), button) in sorted_spellbook.iter().zip(1..) {
+					let ability = abilites.0.get(*id).expect("found non-existing ability");
+
+					let ability_color = if **id == active_ability.0 {
 						Color32::GREEN
 					} else {
 						Color32::WHITE
 					};
 
 					#[allow(clippy::option_if_let_else)]
-					let (text, text_color) = if let Some(cooldown_left) = ability.cooldown_left(state.turn) {
+					let (text, text_color) = if let Some(cooldown_left) =
+						spellbook_ability.cooldown_left(ability, state.turn)
+					{
 						(&format!("{} ({cooldown_left})", ability.name), Color32::RED)
 					} else {
 						(&ability.name, Color32::WHITE)
@@ -964,7 +979,7 @@ fn ability_ui(
 						.interact(Sense::click());
 
 					if response.clicked() {
-						active_ability.0 = *id;
+						active_ability.0 = **id;
 					}
 				}
 			})

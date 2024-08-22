@@ -16,7 +16,8 @@ use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
 
 use super::{
-	AbilityEffect, AbilityEvent, AbilityEventTarget, ActiveAbility, Health, Spellbook, Vision,
+	Abilities, AbilityEffect, AbilityEvent, AbilityEventTarget, ActiveAbility, Health, Spellbook,
+	Vision,
 };
 use crate::animation::Animation;
 use crate::{
@@ -114,7 +115,6 @@ pub(crate) fn player_movement(
 			&ActiveAbility,
 			&Transform,
 			&GridCoords,
-			&Spellbook,
 			&mut Sprite,
 			&mut TextureAtlas,
 			&mut Animation,
@@ -122,6 +122,7 @@ pub(crate) fn player_movement(
 		With<Player>,
 	>,
 	level_cache: Res<'_, LevelCache>,
+	abilities: Res<'_, Abilities>,
 	mut level_selection: ResMut<'_, LevelSelection>,
 	mut destination_entity: ResMut<'_, PlayerEntityDestination>,
 	mut animation_state: ResMut<'_, TurnState>,
@@ -170,7 +171,6 @@ pub(crate) fn player_movement(
 			active_ability,
 			transform,
 			grid_pos,
-			spellbook,
 			mut sprite,
 			mut atlas,
 			mut animation,
@@ -208,10 +208,10 @@ pub(crate) fn player_movement(
 			}
 			Destination::Wall => (),
 			Destination::Enemy => {
-				let ability = spellbook
+				let ability = abilities
 					.0
 					.get(&active_ability.0)
-					.expect("invalid active ability");
+					.expect("non valid spell id");
 
 				if let AbilityEffect::Damage(_) = ability.effect {
 					cast_ability.send(AbilityEvent::new(
@@ -296,21 +296,10 @@ pub(crate) fn door_interactions(
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 pub(crate) fn cast_ability(
 	mut inputs: EventReader<'_, '_, MouseButtonInput>,
-	mut abilities: EventWriter<'_, AbilityEvent>,
-	player: Query<
-		'_,
-		'_,
-		(
-			Entity,
-			&GridCoords,
-			&Health,
-			&Vision,
-			&ActiveAbility,
-			&Spellbook,
-		),
-		With<Player>,
-	>,
+	mut ability_events: EventWriter<'_, AbilityEvent>,
+	player: Query<'_, '_, (Entity, &GridCoords, &Health, &Vision, &ActiveAbility), With<Player>>,
 	targeting_marker: Query<'_, '_, (&GridCoords, &TargetingMarker)>,
+	abilities: Res<'_, Abilities>,
 ) {
 	for input in inputs.read() {
 		let MouseButtonInput {
@@ -322,38 +311,37 @@ pub(crate) fn cast_ability(
 			continue;
 		};
 
-		let (player_entity, player_grid_coords, health, vision, ability, spellbook) =
-			player.single();
+		let (player_entity, player_grid_coords, health, vision, active_ability) = player.single();
 		let (target_grid_coords, target_marker) = targeting_marker.single();
 
 		if !vision.tiles.contains(target_grid_coords) {
 			continue;
 		}
 
-		let spell = spellbook
+		let ability = abilities
 			.0
-			.get(&ability.0)
+			.get(&active_ability.0)
 			.expect("active ability has a non valid ability id");
 
-		if spell.aoe.is_some() {
-			abilities.send(AbilityEvent::new(
+		if ability.aoe.is_some() {
+			ability_events.send(AbilityEvent::new(
 				player_entity,
-				ability.0,
+				active_ability.0,
 				AbilityEventTarget::Tile(*target_grid_coords),
 			));
-		} else if let AbilityEffect::Healing(_) = spell.effect {
+		} else if let AbilityEffect::Healing(_) = ability.effect {
 			if player_grid_coords == target_grid_coords && health.current != health.max {
-				abilities.send(AbilityEvent::new(
+				ability_events.send(AbilityEvent::new(
 					player_entity,
-					ability.0,
+					active_ability.0,
 					AbilityEventTarget::Entity(player_entity),
 				));
 			}
-		} else if let AbilityEffect::Buff(_) = spell.effect {
+		} else if let AbilityEffect::Buff(_) = ability.effect {
 			if player_grid_coords == target_grid_coords {
-				abilities.send(AbilityEvent::new(
+				ability_events.send(AbilityEvent::new(
 					player_entity,
-					ability.0,
+					active_ability.0,
 					AbilityEventTarget::Entity(player_entity),
 				));
 			}
@@ -362,9 +350,9 @@ pub(crate) fn cast_ability(
 				return;
 			};
 
-			abilities.send(AbilityEvent::new(
+			ability_events.send(AbilityEvent::new(
 				player_entity,
-				ability.0,
+				active_ability.0,
 				AbilityEventTarget::Entity(target_entity),
 			));
 		};
@@ -383,55 +371,59 @@ pub(crate) fn select_ability(
 	};
 
 	for ev in input.read() {
-		let mut spellbook_iter = spellbook.0.iter();
+		let mut sorted_spellbook = spellbook.abilities.iter().collect::<Vec<_>>();
+
+		sorted_spellbook.sort_by(|(id1, _), (id2, _)| (id1).partial_cmp(id2).unwrap());
+
+		let mut sorted_spellbook_iter = sorted_spellbook.iter();
 
 		if let ButtonState::Pressed = ev.state {
 			match ev.key_code {
 				KeyCode::Digit1 => {
 					active_ability.0.clone_from(
-						spellbook_iter
+						sorted_spellbook_iter
 							.next()
 							.expect("first slot always needs to have autoattack")
 							.0,
 					);
 				}
 				KeyCode::Digit2 => {
-					if let Some(name) = spellbook_iter.nth(1) {
+					if let Some(name) = sorted_spellbook_iter.nth(1) {
 						active_ability.0.clone_from(name.0);
 					}
 				}
 				KeyCode::Digit3 => {
-					if let Some(name) = spellbook_iter.nth(2) {
+					if let Some(name) = sorted_spellbook_iter.nth(2) {
 						active_ability.0.clone_from(name.0);
 					}
 				}
 				KeyCode::Digit4 => {
-					if let Some(name) = spellbook_iter.nth(3) {
+					if let Some(name) = sorted_spellbook_iter.nth(3) {
 						active_ability.0.clone_from(name.0);
 					}
 				}
 				KeyCode::Digit5 => {
-					if let Some(name) = spellbook_iter.nth(4) {
+					if let Some(name) = sorted_spellbook_iter.nth(4) {
 						active_ability.0.clone_from(name.0);
 					}
 				}
 				KeyCode::Digit6 => {
-					if let Some(name) = spellbook_iter.nth(5) {
+					if let Some(name) = sorted_spellbook_iter.nth(5) {
 						active_ability.0.clone_from(name.0);
 					}
 				}
 				KeyCode::Digit7 => {
-					if let Some(name) = spellbook_iter.nth(6) {
+					if let Some(name) = sorted_spellbook_iter.nth(6) {
 						active_ability.0.clone_from(name.0);
 					}
 				}
 				KeyCode::Digit8 => {
-					if let Some(name) = spellbook_iter.nth(7) {
+					if let Some(name) = sorted_spellbook_iter.nth(7) {
 						active_ability.0.clone_from(name.0);
 					}
 				}
 				KeyCode::Digit9 => {
-					if let Some(name) = spellbook_iter.nth(8) {
+					if let Some(name) = sorted_spellbook_iter.nth(8) {
 						active_ability.0.clone_from(name.0);
 					}
 				}

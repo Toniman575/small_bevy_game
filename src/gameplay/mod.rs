@@ -1,9 +1,10 @@
 //! Shared gameplay functionality.
 
+mod abilities;
 mod enemy;
 mod player;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use bevy::color::palettes::css::RED;
@@ -15,11 +16,12 @@ use bevy_ecs_tilemap::map::TilemapSize;
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
 
+pub(crate) use self::abilities::Abilities;
 pub(crate) use self::enemy::{move_enemies, Enemy, EnemyBundle};
 pub(crate) use self::player::{
 	cast_ability, door_interactions, player_movement, select_ability, Player, PlayerBundle,
 };
-use crate::animation::{AnimationAbility, Animation, ArrivedAtTile};
+use crate::animation::{Animation, AnimationAbility, ArrivedAtTile};
 use crate::util::{flip_sprite, OrderedNeighbors};
 use crate::{
 	util, Destination, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, Textures,
@@ -95,7 +97,7 @@ pub(crate) struct AbilityEvent {
 	/// The entity casting the ability.
 	pub(crate) caster_entity: Entity,
 	/// The ability being cast.
-	pub(crate) ability:       u64,
+	pub(crate) ability:       AbilityId,
 	/// The target of the ability.
 	pub(crate) target:        AbilityEventTarget,
 }
@@ -104,7 +106,7 @@ impl AbilityEvent {
 	/// Creates an abilityevent.
 	pub(crate) const fn new(
 		caster_entity: Entity,
-		ability: u64,
+		ability: AbilityId,
 		target: AbilityEventTarget,
 	) -> Self {
 		Self {
@@ -130,9 +132,9 @@ pub(crate) enum AbilityEffect {
 
 /// Holds animation data.
 #[derive(Reflect, Clone)]
-struct AbilityAnimation {
+pub(crate) struct AbilityAnimation {
 	/// Animation texture handle.
-	texture: Handle<Image>,
+	texture:  Handle<Image>,
 	/// Animation duration.
 	duration: Duration,
 }
@@ -140,8 +142,6 @@ struct AbilityAnimation {
 /// An ability an entity can perform.
 #[derive(Reflect, Clone)]
 pub(crate) struct Ability {
-	/// Identifier for the ability.
-	pub(crate) id:        u64,
 	/// Name of the ability.
 	pub(crate) name:      String,
 	/// The range in manhatten distance of the ability.
@@ -152,8 +152,6 @@ pub(crate) struct Ability {
 	pub(crate) effect:    AbilityEffect,
 	/// The Cooldown of the ability.
 	cooldown:             Option<u8>,
-	/// When this ability was last cast.
-	pub(crate) last_cast: Option<u64>,
 	/// Animation data.
 	pub(crate) animation: Option<AbilityAnimation>,
 }
@@ -161,24 +159,20 @@ pub(crate) struct Ability {
 impl Ability {
 	/// Creates an ability.
 	const fn new(
-		id: u64,
 		name: String,
 		range: u8,
 		aoe: Option<u8>,
 		effect: AbilityEffect,
 		cooldown: Option<u8>,
-		animation:  Option<AbilityAnimation>,
+		animation: Option<AbilityAnimation>,
 	) -> Self {
 		Self {
-			id,
 			name,
 			range,
 			aoe,
 			effect,
 			cooldown,
-			last_cast: None,
 			animation,
-			
 		}
 	}
 
@@ -194,20 +188,6 @@ impl Ability {
 		let distance = util::euclidean_distance_raw(target, origin);
 
 		distance.floor() <= self.range.into()
-	}
-
-	/// Calculates how much cooldown is left for this ability.
-	pub(crate) fn cooldown_left(&self, current_turn: u64) -> Option<u64> {
-		self.last_cast.and_then(|last_cast| {
-			let cooldown_left = (last_cast
-				+ u64::from(
-					self.cooldown
-						.expect("when ability has last cast it also needs to have a cooldown"),
-				))
-			.saturating_sub(current_turn);
-
-			(cooldown_left > 0).then_some(cooldown_left)
-		})
 	}
 }
 
@@ -242,123 +222,78 @@ impl Buff {
 	}
 }
 
+/// The ID of an ability.
+#[derive(Clone, Copy, Hash, Reflect, PartialEq, Eq, Default, PartialOrd, Ord)]
+pub(crate) struct AbilityId(u64);
+
+/// An ability an entity can perform.
+#[derive(Default, Reflect, Clone)]
+pub(crate) struct SpellbookAbility {
+	/// When this ability was last cast.
+	pub(crate) last_cast: Option<u64>,
+}
+
+impl SpellbookAbility {
+	/// Calculates how much cooldown is left for this ability.
+	pub(crate) fn cooldown_left(&self, ability: &Ability, current_turn: u64) -> Option<u64> {
+		self.last_cast.and_then(|last_cast| {
+			let cooldown_left = (last_cast
+				+ u64::from(
+					ability
+						.cooldown
+						.expect("when ability has last cast it also needs to have a cooldown"),
+				))
+			.saturating_sub(current_turn);
+
+			(cooldown_left > 0).then_some(cooldown_left)
+		})
+	}
+}
+
 /// The collection of abilities an entity can perform.
 #[derive(Reflect, Component)]
-pub(crate) struct Spellbook(pub(crate) BTreeMap<u64, Ability>);
+pub(crate) struct Spellbook {
+	/// The Id of a melee autoattack of an entity.
+	pub(crate) autoattack_melee:  AbilityId,
+	/// The Id of a ranged autoattack of an entity.
+	pub(crate) autoattack_ranged: AbilityId,
+	/// All abilities an entity can cast.
+	pub(crate) abilities:         HashMap<AbilityId, SpellbookAbility>,
+}
 
 impl Spellbook {
 	/// Default spellbook for player.
 	fn default_player() -> Self {
-		Self(BTreeMap::from([
-			(
-				0,
-				Ability::new(
-					0,
-					String::from("Autoattack"),
-					1,
-					None,
-					AbilityEffect::Damage(5),
-					None,
-					None,
-				),
-			),
-			(
-				1,
-				Ability::new(
-					1,
-					String::from("Ranged"),
-					5,
-					None,
-					AbilityEffect::Damage(3),
-					None,
-					None,
-				),
-			),
-			(
-				2,
-				Ability::new(
-					2,
-					String::from("Hardcore"),
-					1,
-					None,
-					AbilityEffect::Damage(10),
-					Some(3),
-					None,
-				),
-			),
-			(
-				3,
-				Ability::new(
-					3,
-					String::from("Heal"),
-					1,
-					None,
-					AbilityEffect::Healing(10),
-					Some(10),
-					None,
-				),
-			),
-			(
-				4,
-				Ability::new(
-					4,
-					String::from("Teleport"),
-					5,
-					Some(0),
-					AbilityEffect::Teleport,
-					None,
-					None,
-				),
-			),
-			(
-				5,
-				Ability::new(
-					5,
-					String::from("Buff"),
-					1,
-					None,
-					AbilityEffect::Buff(Buff::new(0.75, 3)),
-					Some(5),
-					None,
-				),
-			),
-		]))
+		Self {
+			autoattack_melee:  AbilityId(0),
+			autoattack_ranged: AbilityId(1),
+			abilities:         HashMap::from_iter([
+				(AbilityId(0), SpellbookAbility::default()),
+				(AbilityId(1), SpellbookAbility::default()),
+				(AbilityId(2), SpellbookAbility::default()),
+				(AbilityId(3), SpellbookAbility::default()),
+				(AbilityId(4), SpellbookAbility::default()),
+				(AbilityId(5), SpellbookAbility::default()),
+			]),
+		}
 	}
 
 	/// Default spellbook for enemies.
 	fn default_enemy() -> Self {
-		Self(BTreeMap::from([
-			(
-				0,
-				Ability::new(
-					0,
-					String::from("Autoattack"),
-					1,
-					None,
-					AbilityEffect::Damage(3),
-					None,
-					None,
-				),
-			),
-			(
-				1,
-				Ability::new(
-					1,
-					String::from("Ranged"),
-					2,
-					None,
-					AbilityEffect::Damage(1),
-					None,
-					None,
-				),
-			),
-		]))
+		Self {
+			autoattack_melee:  AbilityId(6),
+			autoattack_ranged: AbilityId(7),
+			abilities:         HashMap::from_iter([
+				(AbilityId(6), SpellbookAbility::default()),
+				(AbilityId(7), SpellbookAbility::default()),
+			]),
+		}
 	}
 }
 
 /// The currently active ability of an entity.
 #[derive(Reflect, Component, Default)]
-pub(crate) struct ActiveAbility(pub(crate) u64);
+pub(crate) struct ActiveAbility(pub(crate) AbilityId);
 
 /// Handles when an entity wants to cast an ability.
 #[allow(
@@ -370,6 +305,7 @@ pub(crate) struct ActiveAbility(pub(crate) u64);
 pub(crate) fn handle_ability_event(
 	mut commands: Commands<'_, '_>,
 	mut state: ResMut<'_, GameState>,
+	abilities: Res<'_, Abilities>,
 	mut entities_q: Query<
 		'_,
 		'_,
@@ -387,21 +323,33 @@ pub(crate) fn handle_ability_event(
 		),
 	>,
 	level_cache: ResMut<'_, LevelCache>,
-	mut abilities: EventReader<'_, '_, AbilityEvent>,
+	mut ability_events: EventReader<'_, '_, AbilityEvent>,
 	mut animation_state: ResMut<'_, TurnState>,
-	handles: Res<'_, Textures>,
 ) {
-	for ability_event in abilities.read() {
-		let (_, _, _, mut spellbook, _, mut health, ..) = entities_q
+	for ability_event in ability_events.read() {
+		let (
+			caster_entity,
+			_,
+			mut caster_grid_coord,
+			mut spellbook,
+			mut caster_sprite,
+			mut health,
+			..,
+		) = entities_q
 			.get_mut(ability_event.caster_entity)
 			.expect("caster not found");
 
-		let ability = spellbook
-			.0
+		let spellbook_ability = spellbook
+			.abilities
 			.get_mut(&ability_event.ability)
 			.expect("requested non-existing ability");
 
-		if ability.last_cast.is_some() {
+		let ability = abilities
+			.0
+			.get(&ability_event.ability)
+			.expect("requested non-existing ability");
+
+		if spellbook_ability.last_cast.is_some() {
 			continue;
 		}
 
@@ -415,7 +363,7 @@ pub(crate) fn handle_ability_event(
 			}
 			AbilityEffect::Healing(power) => {
 				if ability.cooldown.is_some() {
-					ability.last_cast = Some(state.turn);
+					spellbook_ability.last_cast = Some(state.turn);
 				}
 
 				health.current = (health.current + power).min(health.max);
@@ -430,16 +378,7 @@ pub(crate) fn handle_ability_event(
 					unreachable!("sent teleport spell on an entity")
 				};
 
-				let (caster_entity, _, mut caster_grid_coord, mut spellbook, mut sprite, ..) =
-					entities_q
-						.get_mut(ability_event.caster_entity)
-						.expect("caster not found");
-				flip_sprite(*caster_grid_coord, target_grid_coord, &mut sprite);
-
-				let ability = spellbook
-					.0
-					.get_mut(&ability_event.ability)
-					.expect("requested non-existing ability");
+				flip_sprite(*caster_grid_coord, target_grid_coord, &mut caster_sprite);
 
 				if !ability.in_euclidean_range(*caster_grid_coord, target_grid_coord) {
 					continue;
@@ -451,7 +390,7 @@ pub(crate) fn handle_ability_event(
 					caster_grid_coord.set_if_neq(target_grid_coord);
 
 					if ability.cooldown.is_some() {
-						ability.last_cast = Some(state.turn);
+						spellbook_ability.last_cast = Some(state.turn);
 					}
 
 					commands.trigger_targets(ArrivedAtTile, caster_entity);
@@ -464,7 +403,7 @@ pub(crate) fn handle_ability_event(
 			}
 			AbilityEffect::Buff(mut buff) => {
 				if ability.cooldown.is_some() {
-					ability.last_cast = Some(state.turn);
+					spellbook_ability.last_cast = Some(state.turn);
 				}
 
 				buff.last_cast = Some(state.turn);
@@ -506,11 +445,6 @@ pub(crate) fn handle_ability_event(
 
 		flip_sprite(*caster_grid_coord, *target_grid_coord, &mut sprite);
 
-		let ability = spellbook
-			.0
-			.get_mut(&ability_event.ability)
-			.expect("requested non-existing ability");
-
 		if !ability.in_euclidean_range(*caster_grid_coord, *target_grid_coord) {
 			continue;
 		}
@@ -526,9 +460,11 @@ pub(crate) fn handle_ability_event(
 			unreachable!("entity has to be enemy or player");
 		}
 
-		let power_modifier = target_buff.map_or(1, |buff| buff.power as u16);
+		let power_modifier = target_buff.map_or(1., |buff| buff.power);
 
-		target_health.current = target_health.current.saturating_sub(power * power_modifier);
+		target_health.current = target_health
+			.current
+			.saturating_sub((power as f32 * power_modifier) as u16);
 		let target = caster_transform.translation
 			+ ((target_transform.translation.xy() - caster_transform.translation.xy()).normalize()
 				* 5.)
@@ -556,35 +492,42 @@ pub(crate) fn handle_ability_event(
 			),
 		),));
 
-		let to_enemy = (target_transform.translation.xy() - caster_transform.translation.xy()).normalize();
+		let to_enemy =
+			(target_transform.translation.xy() - caster_transform.translation.xy()).normalize();
 		let rotate_to_enemy = Quat::from_rotation_arc(Vec3::Y, to_enemy.extend(0.));
-
-		commands.spawn((
-			AnimationAbility,
-			SpriteBundle {
-				texture: handles.arrow.clone(),
-				transform: Transform {
-					translation: caster_transform.translation,
-					rotation:    rotate_to_enemy,
-					..Transform::default()
-				},
-				..SpriteBundle::default()
-			},
-			Animator::new(
-				Tween::new(
-					EaseMethod::Linear,
-					Duration::from_secs_f64(0.2),
-					TransformPositionLens {
-						start: caster_transform.translation,
-						end:   target_transform.translation,
+		if let Some(ability_animation) = &ability.animation {
+			commands.spawn((
+				AnimationAbility,
+				SpriteBundle {
+					texture: ability_animation.texture.clone(),
+					transform: Transform {
+						translation: caster_transform.translation,
+						rotation: rotate_to_enemy,
+						..Transform::default()
 					},
-				)
-				.with_completed_event(0),
-			),
-		));
+					..SpriteBundle::default()
+				},
+				Animator::new(
+					Tween::new(
+						EaseMethod::Linear,
+						ability_animation.duration,
+						TransformPositionLens {
+							start: caster_transform.translation,
+							end:   target_transform.translation,
+						},
+					)
+					.with_completed_event(0),
+				),
+			));
+		}
 
 		if ability.cooldown.is_some() {
-			ability.last_cast = Some(state.turn);
+			let spellbook_ability = spellbook
+				.abilities
+				.get_mut(&ability_event.ability)
+				.expect("requested non-existing ability");
+
+			spellbook_ability.last_cast = Some(state.turn);
 		}
 	}
 }
@@ -653,13 +596,19 @@ pub(crate) fn update_healthbar(
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn tick_cooldowns(
 	state: ResMut<'_, GameState>,
+	abilities: Res<'_, Abilities>,
 	mut spellbooks: Query<'_, '_, &mut Spellbook>,
 ) {
 	if state.is_changed() {
 		for mut spellbook in &mut spellbooks {
-			for ability in spellbook.0.values_mut() {
-				if ability.cooldown_left(state.turn).is_none() {
-					ability.last_cast = None;
+			for (id, spellbook_ability) in &mut spellbook.abilities {
+				let ability = abilities.0.get(id).expect("found non-existing ability");
+
+				if spellbook_ability
+					.cooldown_left(ability, state.turn)
+					.is_none()
+				{
+					spellbook_ability.last_cast = None;
 				}
 			}
 		}
