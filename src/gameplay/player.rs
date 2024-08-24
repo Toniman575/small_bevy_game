@@ -109,13 +109,11 @@ pub(crate) fn player_movement(
 	mut state: ResMut<'_, GameState>,
 	mut commands: Commands<'_, '_>,
 	mut inputs: EventReader<'_, '_, KeyboardInput>,
-	mut cast_ability: EventWriter<'_, AbilityEvent>,
 	mut player: Query<
 		'_,
 		'_,
 		(
 			Entity,
-			&ActiveAbility,
 			&Transform,
 			&GridCoords,
 			&mut Sprite,
@@ -125,7 +123,6 @@ pub(crate) fn player_movement(
 		With<Player>,
 	>,
 	level_cache: Res<'_, LevelCache>,
-	abilities: Res<'_, Abilities>,
 	mut level_selection: ResMut<'_, LevelSelection>,
 	mut destination_entity: ResMut<'_, PlayerEntityDestination>,
 	mut animation_state: ResMut<'_, TurnState>,
@@ -169,15 +166,8 @@ pub(crate) fn player_movement(
 
 		*buffered_movement = None;
 
-		let (
-			player_entity,
-			active_ability,
-			transform,
-			grid_pos,
-			mut sprite,
-			mut atlas,
-			mut animation,
-		) = player.single_mut();
+		let (player_entity, transform, grid_pos, mut sprite, mut atlas, mut animation) =
+			player.single_mut();
 		let destination = *grid_pos + direction;
 
 		match level_cache.destination(&state.doors, *grid_pos, destination) {
@@ -209,21 +199,7 @@ pub(crate) fn player_movement(
 					sprite.flip_x = flip;
 				}
 			}
-			Destination::Wall => (),
-			Destination::Enemy => {
-				let ability = abilities
-					.0
-					.get(&active_ability.0)
-					.expect("non valid spell id");
-
-				if let AbilityEffect::Damage(_) = ability.effect {
-					cast_ability.send(AbilityEvent::new(
-						player_entity,
-						active_ability.0,
-						AbilityEventTarget::Entity(*level_cache.enemies.get(&destination).unwrap()),
-					));
-				}
-			}
+			Destination::Wall | Destination::Enemy => (),
 			Destination::Door(door) => {
 				if let LevelSelection::Iid(current_level) = level_selection.as_mut() {
 					*current_level = door.level;
@@ -300,10 +276,16 @@ pub(crate) fn door_interactions(
 pub(crate) fn cast_ability(
 	mut inputs: EventReader<'_, '_, MouseButtonInput>,
 	mut ability_events: EventWriter<'_, AbilityEvent>,
-	player: Query<'_, '_, (Entity, &GridCoords, &Health, &Vision, &ActiveAbility), With<Player>>,
+	player: Query<'_, '_, (Entity, &GridCoords, &Health, &ActiveAbility), With<Player>>,
 	targeting_marker: Query<'_, '_, (&GridCoords, &TargetingMarker)>,
 	abilities: Res<'_, Abilities>,
 ) {
+	let (target_grid_coords, target_marker) = targeting_marker.single();
+
+	if !target_marker.valid {
+		return;
+	}
+
 	for input in inputs.read() {
 		let MouseButtonInput {
 			state: ButtonState::Pressed,
@@ -314,12 +296,7 @@ pub(crate) fn cast_ability(
 			continue;
 		};
 
-		let (player_entity, player_grid_coords, health, vision, active_ability) = player.single();
-		let (target_grid_coords, target_marker) = targeting_marker.single();
-
-		if !vision.tiles.contains(target_grid_coords) {
-			continue;
-		}
+		let (player_entity, player_grid_coords, health, active_ability) = player.single();
 
 		let ability = abilities
 			.0
@@ -352,26 +329,26 @@ pub(crate) fn cast_ability(
 					}
 				}
 				EffectType::DefensiveDebuff | EffectType::AttackDebuff => {
-					let Some(target_entity) = target_marker.0 else {
-						return;
-					};
-
 					ability_events.send(AbilityEvent::new(
 						player_entity,
 						active_ability.0,
-						AbilityEventTarget::Entity(target_entity),
+						AbilityEventTarget::Entity(
+							target_marker
+								.entity
+								.expect("casting ability with invalid target"),
+						),
 					));
 				}
 			}
 		} else {
-			let Some(target_entity) = target_marker.0 else {
-				return;
-			};
-
 			ability_events.send(AbilityEvent::new(
 				player_entity,
 				active_ability.0,
-				AbilityEventTarget::Entity(target_entity),
+				AbilityEventTarget::Entity(
+					target_marker
+						.entity
+						.expect("casting ability with invalid target"),
+				),
 			));
 		};
 

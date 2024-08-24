@@ -23,10 +23,7 @@ pub(crate) use self::player::{
 };
 use crate::animation::{Animation, AnimationAbility, ArrivedAtTile};
 use crate::util::{flip_sprite, OrderedNeighbors};
-use crate::{
-	util, Destination, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, Textures,
-	TurnState,
-};
+use crate::{util, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, Textures, TurnState};
 
 /// Component for tracking health in entities.
 #[derive(Clone, Component, Debug, Default, Reflect, PartialEq, Eq, Copy)]
@@ -333,7 +330,8 @@ pub(crate) struct ActiveAbility(pub(crate) AbilityId);
 	clippy::too_many_arguments,
 	clippy::cast_possible_truncation,
 	clippy::cast_sign_loss,
-	clippy::as_conversions
+	clippy::as_conversions,
+	clippy::cognitive_complexity
 )]
 pub(crate) fn handle_ability_event(
 	mut commands: Commands<'_, '_>,
@@ -355,7 +353,6 @@ pub(crate) fn handle_ability_event(
 			Has<Enemy>,
 		),
 	>,
-	level_cache: ResMut<'_, LevelCache>,
 	mut ability_events: EventReader<'_, '_, AbilityEvent>,
 	mut animation_state: ResMut<'_, TurnState>,
 ) {
@@ -391,7 +388,7 @@ pub(crate) fn handle_ability_event(
 		let (target_entity, power) = match ability.effect.clone() {
 			AbilityEffect::Damage(power) => {
 				let AbilityEventTarget::Entity(entity) = ability_event.target else {
-					unreachable!("sent teleport spell on an entity")
+					unreachable!("sent wrong event target")
 				};
 
 				let mut power_modifier = 1.;
@@ -425,24 +422,16 @@ pub(crate) fn handle_ability_event(
 
 				flip_sprite(*caster_grid_coord, target_grid_coord, &mut caster_sprite);
 
-				if !ability.in_euclidean_range(*caster_grid_coord, target_grid_coord) {
-					continue;
+				caster_grid_coord.set_if_neq(target_grid_coord);
+
+				if ability.cooldown.is_some() {
+					spellbook_ability.last_cast = Some(state.turn);
 				}
 
-				if let Destination::Walkable =
-					level_cache.destination(&state.doors, *caster_grid_coord, target_grid_coord)
-				{
-					caster_grid_coord.set_if_neq(target_grid_coord);
+				commands.trigger_targets(ArrivedAtTile, caster_entity);
 
-					if ability.cooldown.is_some() {
-						spellbook_ability.last_cast = Some(state.turn);
-					}
-
-					commands.trigger_targets(ArrivedAtTile, caster_entity);
-
-					state.turn += 1;
-					*animation_state = TurnState::EnemiesWaiting;
-				}
+				state.turn += 1;
+				*animation_state = TurnState::EnemiesWaiting;
 
 				continue;
 			}
@@ -451,26 +440,37 @@ pub(crate) fn handle_ability_event(
 					spellbook_ability.last_cast = Some(state.turn);
 				}
 
-				effect.last_cast = Some(state.turn);
+				match effect.effect_type {
+					EffectType::DefensiveBuff | EffectType::AttackBuff => {
+						effect.last_cast = Some(state.turn);
 
-				let mut contains_effect = None;
+						let mut contains_effect = None;
 
-				for (index, old_effect) in caster_status_effect.0.iter().enumerate() {
-					if effect == *old_effect {
-						contains_effect = Some(index);
+						for (index, old_effect) in caster_status_effect.0.iter().enumerate() {
+							if effect == *old_effect {
+								contains_effect = Some(index);
+							}
+						}
+
+						if let Some(index) = contains_effect {
+							caster_status_effect.0.remove(index);
+						}
+
+						caster_status_effect.0.push(effect);
+
+						state.turn += 1;
+						*animation_state = TurnState::EnemiesWaiting;
+
+						continue;
+					}
+					EffectType::DefensiveDebuff | EffectType::AttackDebuff => {
+						let AbilityEventTarget::Entity(entity) = ability_event.target else {
+							unreachable!("sent wrong event target")
+						};
+
+						(entity, 0)
 					}
 				}
-
-				if let Some(index) = contains_effect {
-					caster_status_effect.0.remove(index);
-				}
-
-				caster_status_effect.0.push(effect);
-
-				state.turn += 1;
-				*animation_state = TurnState::EnemiesWaiting;
-
-				continue;
 			}
 		};
 
@@ -495,16 +495,12 @@ pub(crate) fn handle_ability_event(
 				_,
 				mut target_health,
 				mut vision,
-				target_status_effect,
+				mut target_status_effect,
 				..,
 			),
 		] = entities_q.many_mut([ability_event.caster_entity, target_entity]);
 
 		flip_sprite(*caster_grid_coord, *target_grid_coord, &mut sprite);
-
-		if !ability.in_euclidean_range(*caster_grid_coord, *target_grid_coord) {
-			continue;
-		}
 
 		vision.memory.insert(caster_entity, *caster_grid_coord);
 
@@ -517,19 +513,6 @@ pub(crate) fn handle_ability_event(
 			unreachable!("entity has to be enemy or player");
 		}
 
-		let mut power_modifier = 1.;
-
-		for effect in &target_status_effect.0 {
-			if effect.effect_type == EffectType::DefensiveBuff {
-				power_modifier -= effect.power;
-			} else if effect.effect_type == EffectType::DefensiveDebuff {
-				power_modifier += effect.power;
-			}
-		}
-
-		target_health.current = target_health
-			.current
-			.saturating_sub((f32::from(power) * power_modifier) as u16);
 		let target = caster_transform.translation
 			+ ((target_transform.translation.xy() - caster_transform.translation.xy()).normalize()
 				* 5.)
@@ -631,6 +614,41 @@ pub(crate) fn handle_ability_event(
 
 			spellbook_ability.last_cast = Some(state.turn);
 		}
+
+		if let AbilityEffect::StatusEffect(effect) = &ability.effect {
+			let mut contains_effect = None;
+
+			for (index, old_effect) in target_status_effect.0.iter().enumerate() {
+				if effect == old_effect {
+					contains_effect = Some(index);
+				}
+			}
+
+			if let Some(index) = contains_effect {
+				target_status_effect.0.remove(index);
+			}
+
+			let mut effect = effect.clone();
+			effect.last_cast = Some(state.turn);
+
+			target_status_effect.0.push(effect);
+
+			continue;
+		}
+
+		let mut power_modifier = 1.;
+
+		for effect in &target_status_effect.0 {
+			if effect.effect_type == EffectType::DefensiveBuff {
+				power_modifier -= effect.power;
+			} else if effect.effect_type == EffectType::DefensiveDebuff {
+				power_modifier += effect.power;
+			}
+		}
+
+		target_health.current = target_health
+			.current
+			.saturating_sub((f32::from(power) * power_modifier) as u16);
 	}
 }
 
@@ -725,15 +743,9 @@ pub(crate) fn tick_status_effects(
 ) {
 	if state.is_changed() {
 		for mut effects in &mut status_effects {
-			let mut retain = vec![];
-
-			for effect in &mut effects.0 {
-				if effect.turns_left(state.turn).is_some() {
-					retain.push(effect.clone());
-				}
-			}
-
-			effects.0.retain(|effect| retain.contains(&effect));
+			effects
+				.0
+				.retain(|effect| effect.turns_left(state.turn).is_some());
 		}
 	}
 }

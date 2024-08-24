@@ -134,9 +134,14 @@ impl From<&EntityInstance> for Drops {
 #[derive(Default, Resource)]
 struct PlayerEntityDestination(Option<EntityIid>);
 
+/// Marker component for the targeting marker (highlights the tile u are hovering with your mouse).
 #[derive(Component, PartialEq, Eq)]
-///  Marker component for the targeting marker (highlights the tile u are hovering with your mouse).
-struct TargetingMarker(Option<Entity>);
+struct TargetingMarker {
+	/// Entity currently targeted.
+	entity: Option<Entity>,
+	/// If target is valid for the current ability.
+	valid:  bool,
+}
 
 /// Saves the cursor world position.
 #[derive(Resource, Default, Clone, Copy, Debug)]
@@ -310,7 +315,10 @@ fn startup(
 			},
 			..SpriteBundle::default()
 		},
-		TargetingMarker(None),
+		TargetingMarker {
+			entity: None,
+			valid:  false,
+		},
 		GridCoords::default(),
 		Name::new("Tile Target Marker"),
 	));
@@ -638,10 +646,10 @@ fn update_cursor_pos(
 }
 
 /// Updates the `TargetingMarker` with updated `CursorPos`.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn update_target_marker(
 	cursor_pos: Res<'_, CursorPos>,
-	player: Query<'_, '_, (&GridCoords, &Health, &ActiveAbility, &Vision), With<Player>>,
+	player: Query<'_, '_, (Entity, &GridCoords, &Health, &ActiveAbility, &Vision), With<Player>>,
 	mut target_marker: Query<
 		'_,
 		'_,
@@ -658,7 +666,9 @@ fn update_target_marker(
 ) {
 	let (mut marker, mut visibility, mut marker_grid_coords, mut sprite) =
 		target_marker.single_mut();
-	let Ok((player_grid_coords, health, active_ability, vision)) = player.get_single() else {
+	let Ok((player_entity, player_grid_coords, health, active_ability, vision)) =
+		player.get_single()
+	else {
 		return;
 	};
 
@@ -666,7 +676,10 @@ fn update_target_marker(
 		|| !vision.tiles.contains(&cursor_pos.tile_pos)
 	{
 		*visibility = Visibility::Hidden;
-		marker.set_if_neq(TargetingMarker(None));
+		marker.set_if_neq(TargetingMarker {
+			entity: None,
+			valid:  false,
+		});
 	} else {
 		visibility.set_if_neq(Visibility::Inherited);
 		marker_grid_coords.set_if_neq(cursor_pos.tile_pos);
@@ -680,58 +693,99 @@ fn update_target_marker(
 		match &ability.effect {
 			AbilityEffect::Damage(_) => {
 				if let Some(entity) = enemy {
-					if ability.in_euclidean_range(*player_grid_coords, *marker_grid_coords) {
-						sprite.color = RED.into();
-					} else {
-						sprite.color = YELLOW.into();
-					}
+					let valid =
+						if ability.in_euclidean_range(*player_grid_coords, *marker_grid_coords) {
+							sprite.color = RED.into();
+							true
+						} else {
+							sprite.color = YELLOW.into();
+							false
+						};
 
-					marker.set_if_neq(TargetingMarker(Some(*entity)));
+					marker.set_if_neq(TargetingMarker {
+						entity: Some(*entity),
+						valid,
+					});
 				} else {
 					sprite.color = Color::WHITE;
-					marker.set_if_neq(TargetingMarker(None));
+					marker.set_if_neq(TargetingMarker {
+						entity: None,
+						valid:  false,
+					});
 				}
 			}
 			AbilityEffect::Healing(_) => {
-				if *player_grid_coords == *marker_grid_coords && health.current != health.max {
-					sprite.color = GREEN.into();
-				} else {
-					sprite.color = RED.into();
-				}
+				let valid =
+					if *player_grid_coords == *marker_grid_coords && health.current != health.max {
+						sprite.color = GREEN.into();
+						true
+					} else {
+						sprite.color = RED.into();
+						false
+					};
+
+				marker.set_if_neq(TargetingMarker {
+					entity: Some(player_entity),
+					valid,
+				});
 			}
 			AbilityEffect::Teleport => {
-				marker.set_if_neq(TargetingMarker(None));
-
-				if enemy.is_none() && !level_cache.walls.contains(marker_grid_coords.deref()) {
-					if ability.in_euclidean_range(*player_grid_coords, *marker_grid_coords) {
-						sprite.color = RED.into();
+				let valid =
+					if enemy.is_none() && !level_cache.walls.contains(marker_grid_coords.deref()) {
+						if ability.in_euclidean_range(*player_grid_coords, *marker_grid_coords) {
+							sprite.color = GREEN.into();
+							true
+						} else {
+							sprite.color = YELLOW.into();
+							false
+						}
 					} else {
-						sprite.color = YELLOW.into();
-					}
-				} else {
-					sprite.color = Color::WHITE;
-				}
+						sprite.color = RED.into();
+						false
+					};
+
+				marker.set_if_neq(TargetingMarker {
+					entity: None,
+					valid,
+				});
 			}
 			AbilityEffect::StatusEffect(effect) => match effect.effect_type {
 				EffectType::DefensiveBuff | EffectType::AttackBuff => {
-					if *player_grid_coords == *marker_grid_coords {
+					let valid = if *player_grid_coords == *marker_grid_coords {
 						sprite.color = GREEN.into();
+						true
 					} else {
 						sprite.color = RED.into();
-					}
+						false
+					};
+
+					marker.set_if_neq(TargetingMarker {
+						entity: Some(player_entity),
+						valid,
+					});
 				}
 				EffectType::DefensiveDebuff | EffectType::AttackDebuff => {
 					if let Some(entity) = enemy {
-						if ability.in_euclidean_range(*player_grid_coords, *marker_grid_coords) {
+						let valid = if ability
+							.in_euclidean_range(*player_grid_coords, *marker_grid_coords)
+						{
 							sprite.color = RED.into();
+							true
 						} else {
 							sprite.color = YELLOW.into();
-						}
+							false
+						};
 
-						marker.set_if_neq(TargetingMarker(Some(*entity)));
+						marker.set_if_neq(TargetingMarker {
+							entity: Some(*entity),
+							valid,
+						});
 					} else {
 						sprite.color = Color::WHITE;
-						marker.set_if_neq(TargetingMarker(None));
+						marker.set_if_neq(TargetingMarker {
+							entity: None,
+							valid:  false,
+						});
 					}
 				}
 			},
@@ -1036,7 +1090,7 @@ fn player_effect_ui(
 						"{} {}",
 						effect.name,
 						effect.turns_left(state.turn).expect(
-							"if there are no turns left the statuseffect shouldn't be present 
+							"if there are no turns left the status effect shouldn't be present \
 							 anymore"
 						)
 					));
