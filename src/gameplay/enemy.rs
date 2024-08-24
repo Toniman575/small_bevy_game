@@ -12,7 +12,7 @@ use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
 use pathfinding::prelude::astar;
 
-use super::{AbilityEvent, Health, Player, Spellbook, Vision};
+use super::{AbilityEvent, CurrentStatusEffects, Health, Player, Spellbook, Vision};
 use crate::animation::Animation;
 use crate::gameplay::AbilityEventTarget;
 use crate::util::{self, flip_sprite, OrderedNeighbors};
@@ -45,6 +45,8 @@ pub(crate) struct EnemyBundle {
 	animation:           Animation,
 	/// Which tiles the enemy can see.
 	vision:              Vision,
+	/// Active [`StatusEffects`].
+	effects:             CurrentStatusEffects,
 }
 
 impl Default for EnemyBundle {
@@ -58,6 +60,7 @@ impl Default for EnemyBundle {
 			grid_coords:         GridCoords::default(),
 			animation:           Self::idle_animation(),
 			vision:              Vision::new(4),
+			effects:             CurrentStatusEffects::default(),
 		}
 	}
 }

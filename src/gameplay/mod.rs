@@ -122,10 +122,10 @@ impl AbilityEvent {
 pub(crate) enum AbilityEffect {
 	/// Damages enemies.
 	Damage(u16),
-	/// Heals player.
+	/// Heals caster.
 	Healing(u16),
-	/// Buffs player.
-	Buff(Buff),
+	/// Strengthens the caster.
+	Buff(StatusEffect),
 	/// Teleports.
 	Teleport,
 }
@@ -137,6 +137,8 @@ pub(crate) struct AbilityAnimation {
 	texture:  Handle<Image>,
 	/// Animation duration.
 	duration: Duration,
+	/// Size of the animation.
+	scale:    f32,
 }
 
 /// An ability an entity can perform.
@@ -191,28 +193,40 @@ impl Ability {
 	}
 }
 
-/// A buff.
-#[derive(Reflect, Copy, Clone, Component)]
-pub(crate) struct Buff {
-	/// The power of the buff.
-	pub(crate) power:     f32,
-	/// How many turns the buff lasts.
-	pub(crate) length:    u64,
-	/// When the buff was cast.
-	pub(crate) last_cast: Option<u64>,
+/// The types of Statuseffects.
+#[derive(Reflect, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum EffectType {
+	/// Strengthen the Defense of the caster.
+	DefensiveBuff,
+	/// Strengthen the Attack of the caster.
+	AttackBuff,
 }
 
-impl Buff {
-	/// Creates a [`Buff`].
-	const fn new(power: f32, length: u64) -> Self {
+/// A Statuseffect.
+#[derive(Reflect, Copy, Clone, PartialEq)]
+pub(crate) struct StatusEffect {
+	/// The power of the effect.
+	pub(crate) power:       f32,
+	/// How many turns the effect lasts.
+	pub(crate) length:      u64,
+	/// When the effect was cast.
+	pub(crate) last_cast:   Option<u64>,
+	/// What kind of effect this is.
+	pub(crate) effect_type: EffectType,
+}
+
+impl StatusEffect {
+	/// Creates a [`StatusEffect`].
+	const fn new(power: f32, length: u64, effect_type: EffectType) -> Self {
 		Self {
 			power,
 			length,
 			last_cast: None,
+			effect_type,
 		}
 	}
 
-	/// Calculates how many turns are left for this buff.
+	/// Calculates how many turns are left for this effect.
 	pub(crate) fn turns_left(&self, current_turn: u64) -> Option<u64> {
 		self.last_cast.and_then(|last_cast| {
 			let turns_left = (last_cast + self.length).saturating_sub(current_turn);
@@ -221,6 +235,10 @@ impl Buff {
 		})
 	}
 }
+
+/// Currently active Statuseffects on an entity.
+#[derive(Reflect, Clone, Component, Default)]
+pub(crate) struct CurrentStatusEffects(Vec<StatusEffect>);
 
 /// The ID of an ability.
 #[derive(Clone, Copy, Hash, Reflect, PartialEq, Eq, Default, PartialOrd, Ord)]
@@ -274,6 +292,7 @@ impl Spellbook {
 				(AbilityId(3), SpellbookAbility::default()),
 				(AbilityId(4), SpellbookAbility::default()),
 				(AbilityId(5), SpellbookAbility::default()),
+				(AbilityId(6), SpellbookAbility::default()),
 			]),
 		}
 	}
@@ -281,11 +300,11 @@ impl Spellbook {
 	/// Default spellbook for enemies.
 	fn default_enemy() -> Self {
 		Self {
-			autoattack_melee:  AbilityId(6),
-			autoattack_ranged: AbilityId(7),
+			autoattack_melee:  AbilityId(7),
+			autoattack_ranged: AbilityId(8),
 			abilities:         HashMap::from_iter([
-				(AbilityId(6), SpellbookAbility::default()),
 				(AbilityId(7), SpellbookAbility::default()),
+				(AbilityId(8), SpellbookAbility::default()),
 			]),
 		}
 	}
@@ -300,7 +319,10 @@ pub(crate) struct ActiveAbility(pub(crate) AbilityId);
 	clippy::needless_pass_by_value,
 	clippy::too_many_lines,
 	clippy::type_complexity,
-	clippy::too_many_arguments
+	clippy::too_many_arguments,
+	clippy::cast_possible_truncation,
+	clippy::cast_sign_loss,
+	clippy::as_conversions
 )]
 pub(crate) fn handle_ability_event(
 	mut commands: Commands<'_, '_>,
@@ -317,7 +339,7 @@ pub(crate) fn handle_ability_event(
 			&mut Sprite,
 			&mut Health,
 			&mut Vision,
-			Option<&Buff>,
+			&mut CurrentStatusEffects,
 			Has<Player>,
 			Has<Enemy>,
 		),
@@ -334,6 +356,8 @@ pub(crate) fn handle_ability_event(
 			mut spellbook,
 			mut caster_sprite,
 			mut health,
+			_,
+			mut caster_status_effect,
 			..,
 		) = entities_q
 			.get_mut(ability_event.caster_entity)
@@ -359,7 +383,15 @@ pub(crate) fn handle_ability_event(
 					unreachable!("sent teleport spell on an entity")
 				};
 
-				(entity, power)
+				let mut power_modifier = 1.;
+
+				for buff in &caster_status_effect.0 {
+					if buff.effect_type == EffectType::AttackBuff {
+						power_modifier += buff.power;
+					}
+				}
+
+				(entity, (f32::from(power) * power_modifier) as u16)
 			}
 			AbilityEffect::Healing(power) => {
 				if ability.cooldown.is_some() {
@@ -408,7 +440,19 @@ pub(crate) fn handle_ability_event(
 
 				buff.last_cast = Some(state.turn);
 
-				commands.entity(ability_event.caster_entity).insert(buff);
+				let mut contains_buff = None;
+
+				for (index, old_buff) in caster_status_effect.0.iter().enumerate() {
+					if buff == *old_buff {
+						contains_buff = Some(index);
+					}
+				}
+
+				if let Some(index) = contains_buff {
+					caster_status_effect.0.remove(index);
+				}
+
+				caster_status_effect.0.push(buff);
 
 				state.turn += 1;
 				*animation_state = TurnState::EnemiesWaiting;
@@ -438,7 +482,7 @@ pub(crate) fn handle_ability_event(
 				_,
 				mut target_health,
 				mut vision,
-				target_buff,
+				target_status_effect,
 				..,
 			),
 		] = entities_q.many_mut([ability_event.caster_entity, target_entity]);
@@ -460,11 +504,17 @@ pub(crate) fn handle_ability_event(
 			unreachable!("entity has to be enemy or player");
 		}
 
-		let power_modifier = target_buff.map_or(1., |buff| buff.power);
+		let mut power_modifier = 1.;
+
+		for buff in &target_status_effect.0 {
+			if buff.effect_type == EffectType::DefensiveBuff {
+				power_modifier += buff.power;
+			}
+		}
 
 		target_health.current = target_health
 			.current
-			.saturating_sub((power as f32 * power_modifier) as u16);
+			.saturating_sub((f32::from(power) / power_modifier) as u16);
 		let target = caster_transform.translation
 			+ ((target_transform.translation.xy() - caster_transform.translation.xy()).normalize()
 				* 5.)
@@ -502,8 +552,8 @@ pub(crate) fn handle_ability_event(
 					texture: ability_animation.texture.clone(),
 					transform: Transform {
 						translation: caster_transform.translation,
-						rotation: rotate_to_enemy,
-						..Transform::default()
+						rotation:    rotate_to_enemy,
+						scale:       (Vec2::ONE * ability_animation.scale).extend(1.),
 					},
 					..SpriteBundle::default()
 				},
@@ -617,16 +667,21 @@ pub(crate) fn tick_cooldowns(
 
 /// Ticks buffs currently on cooldown.
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn tick_buff(
-	mut commands: Commands<'_, '_>,
+pub(crate) fn tick_buffs(
 	state: ResMut<'_, GameState>,
-	buffs: Query<'_, '_, (Entity, &Buff)>,
+	mut buffs: Query<'_, '_, &mut CurrentStatusEffects>,
 ) {
 	if state.is_changed() {
-		for (entity, buff) in &buffs {
-			if buff.turns_left(state.turn).is_none() {
-				commands.entity(entity).remove::<Buff>();
+		for mut buffs in &mut buffs {
+			let mut retain = vec![];
+
+			for buff in &mut buffs.0 {
+				if buff.turns_left(state.turn).is_some() {
+					retain.push(*buff);
+				}
 			}
+
+			buffs.0.retain(|&buff| retain.contains(&buff));
 		}
 	}
 }

@@ -16,8 +16,8 @@ use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
 
 use super::{
-	Abilities, AbilityEffect, AbilityEvent, AbilityEventTarget, ActiveAbility, Health, Spellbook,
-	Vision,
+	Abilities, AbilityEffect, AbilityEvent, AbilityEventTarget, ActiveAbility,
+	CurrentStatusEffects, Health, Spellbook, Vision,
 };
 use crate::animation::Animation;
 use crate::{
@@ -54,6 +54,8 @@ pub(crate) struct PlayerBundle {
 	worldly:             Worldly,
 	/// Vision.
 	vision:              Vision,
+	/// Active [`StatusEffects`].
+	effects:             CurrentStatusEffects,
 }
 
 impl Default for PlayerBundle {
@@ -68,6 +70,7 @@ impl Default for PlayerBundle {
 			animation:           Self::idle_animation(),
 			worldly:             Worldly::default(),
 			vision:              Vision::new(4),
+			effects:             CurrentStatusEffects::default(),
 		}
 	}
 }

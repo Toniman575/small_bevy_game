@@ -5,7 +5,8 @@ use std::time::Duration;
 use bevy::prelude::*;
 use bevy::utils::HashMap;
 
-use super::{Ability, AbilityEffect, AbilityId, Buff};
+use super::EffectType::{AttackBuff, DefensiveBuff};
+use super::{Ability, AbilityEffect, AbilityId, StatusEffect};
 use crate::Textures;
 
 /// The list of all abilities.
@@ -14,6 +15,7 @@ pub(crate) struct Abilities(pub(crate) HashMap<AbilityId, Ability>);
 
 impl Abilities {
 	/// All abilities currently in the game.
+	#[allow(clippy::too_many_lines)]
 	pub(crate) fn new(textures: &Textures) -> Self {
 		Self(HashMap::from([
 			(
@@ -37,7 +39,8 @@ impl Abilities {
 					None,
 					Some(super::AbilityAnimation {
 						texture:  textures.arrow.clone(),
-						duration: Duration::from_secs_f64(0.5),
+						duration: Duration::from_secs_f64(0.2),
+						scale: 0.5,
 					}),
 				),
 			),
@@ -77,16 +80,27 @@ impl Abilities {
 			(
 				AbilityId(5),
 				Ability::new(
-					String::from("Buff"),
+					String::from("DefensiveBuff"),
 					1,
 					None,
-					AbilityEffect::Buff(Buff::new(0.75, 3)),
+					AbilityEffect::Buff(StatusEffect::new(0.75, 3, DefensiveBuff)),
 					Some(5),
 					None,
 				),
 			),
 			(
 				AbilityId(6),
+				Ability::new(
+					String::from("AttackBuff"),
+					1,
+					None,
+					AbilityEffect::Buff(StatusEffect::new(2., 3, AttackBuff)),
+					Some(5),
+					None,
+				),
+			),
+			(
+				AbilityId(7),
 				Ability::new(
 					String::from("Autoattack"),
 					1,
@@ -97,7 +111,7 @@ impl Abilities {
 				),
 			),
 			(
-				AbilityId(7),
+				AbilityId(8),
 				Ability::new(
 					String::from("Ranged"),
 					2,

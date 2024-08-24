@@ -2,8 +2,6 @@
 //! - Abilities
 //!   - Implement tooltip.
 //!   - Make sure its easy to add new abilities.
-//!   - Add defensive abilities.
-//!   - Add buffing abilities.
 //!   - Add resources for abilities.
 //!   - Make enemies use new abilities. Probably with a simple state machine.
 //! - Debuffs
@@ -59,7 +57,7 @@ use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
 	SidePanel, Stroke, Widget,
 };
-use gameplay::{tick_buff, Abilities, Buff};
+use gameplay::{tick_buffs, Abilities, CurrentStatusEffects, StatusEffect};
 
 use self::fow::{generate_fov, ApplyFoW};
 use self::gameplay::{
@@ -1025,7 +1023,7 @@ fn main() {
 			PostUpdate,
 			(
 				tick_cooldowns,
-				tick_buff,
+				tick_buffs,
 				(turn_ui, item_ui, ability_ui).before(EguiSet::ProcessOutput),
 				animation::animate,
 				(
@@ -1058,7 +1056,8 @@ fn main() {
 		.register_ldtk_int_cell::<WallBundle>(1)
 		.register_type::<Door>()
 		.register_type::<Drops>()
-		.register_type::<Buff>()
+		.register_type::<StatusEffect>()
+		.register_type::<CurrentStatusEffects>()
 		.register_type::<Health>()
 		.register_type::<LevelCache>()
 		.register_type::<GameState>()
