@@ -5,7 +5,7 @@ use std::time::Duration;
 use bevy::prelude::*;
 use bevy::utils::HashMap;
 
-use super::EffectType::{AttackBuff, DefensiveBuff};
+use super::EffectType::{AttackBuff, AttackDebuff, DefensiveBuff, DefensiveDebuff};
 use super::{Ability, AbilityEffect, AbilityId, StatusEffect};
 use crate::Textures;
 
@@ -40,7 +40,8 @@ impl Abilities {
 					Some(super::AbilityAnimation {
 						texture:  textures.arrow.clone(),
 						duration: Duration::from_secs_f64(0.2),
-						scale: 0.5,
+						scale:    0.5,
+						atlas:    None,
 					}),
 				),
 			),
@@ -52,7 +53,12 @@ impl Abilities {
 					None,
 					AbilityEffect::Damage(10),
 					Some(3),
-					None,
+					Some(super::AbilityAnimation {
+						texture:  textures.slash.clone(),
+						duration: Duration::from_secs_f64(0.25),
+						scale:    0.5,
+						atlas:    Some((textures.slash_atlas.clone(), 6)),
+					}),
 				),
 			),
 			(
@@ -83,7 +89,7 @@ impl Abilities {
 					String::from("DefensiveBuff"),
 					1,
 					None,
-					AbilityEffect::Buff(StatusEffect::new(0.75, 3, DefensiveBuff)),
+					AbilityEffect::StatusEffect(StatusEffect::new(String::from("Force Shield"), 0.75, 3, DefensiveBuff)),
 					Some(5),
 					None,
 				),
@@ -94,13 +100,35 @@ impl Abilities {
 					String::from("AttackBuff"),
 					1,
 					None,
-					AbilityEffect::Buff(StatusEffect::new(2., 3, AttackBuff)),
+					AbilityEffect::StatusEffect(StatusEffect::new(String::from("Muscle Up"), 2., 3, AttackBuff)),
 					Some(5),
 					None,
 				),
 			),
 			(
 				AbilityId(7),
+				Ability::new(
+					String::from("DefensiveDebuff"),
+					1,
+					None,
+					AbilityEffect::StatusEffect(StatusEffect::new(String::from("Rend Armor"), 0.75, 3, DefensiveDebuff)),
+					Some(5),
+					None,
+				),
+			),
+			(
+				AbilityId(8),
+				Ability::new(
+					String::from("AttackDebuff"),
+					1,
+					None,
+					AbilityEffect::StatusEffect(StatusEffect::new(String::from("Weaken"), 0.5, 3, AttackDebuff)),
+					Some(5),
+					None,
+				),
+			),
+			(
+				AbilityId(9),
 				Ability::new(
 					String::from("Autoattack"),
 					1,
@@ -111,7 +139,7 @@ impl Abilities {
 				),
 			),
 			(
-				AbilityId(8),
+				AbilityId(10),
 				Ability::new(
 					String::from("Ranged"),
 					2,

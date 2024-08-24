@@ -118,14 +118,14 @@ impl AbilityEvent {
 }
 
 /// What and how an Ability affects.
-#[derive(Reflect, Copy, Clone)]
+#[derive(Reflect, Clone)]
 pub(crate) enum AbilityEffect {
 	/// Damages enemies.
 	Damage(u16),
 	/// Heals caster.
 	Healing(u16),
-	/// Strengthens the caster.
-	Buff(StatusEffect),
+	/// Affects caster or targets with statuses.
+	StatusEffect(StatusEffect),
 	/// Teleports.
 	Teleport,
 }
@@ -139,6 +139,8 @@ pub(crate) struct AbilityAnimation {
 	duration: Duration,
 	/// Size of the animation.
 	scale:    f32,
+	/// Texture atlas.
+	atlas:    Option<(Handle<TextureAtlasLayout>, usize)>,
 }
 
 /// An ability an entity can perform.
@@ -200,11 +202,17 @@ pub(crate) enum EffectType {
 	DefensiveBuff,
 	/// Strengthen the Attack of the caster.
 	AttackBuff,
+	/// Weakens the Defense of the target.
+	DefensiveDebuff,
+	/// Weakens the Attack of the target.
+	AttackDebuff,
 }
 
 /// A Statuseffect.
-#[derive(Reflect, Copy, Clone, PartialEq)]
+#[derive(Reflect, Clone, PartialEq)]
 pub(crate) struct StatusEffect {
+	/// The name of the effect.
+	pub(crate) name:        String,
 	/// The power of the effect.
 	pub(crate) power:       f32,
 	/// How many turns the effect lasts.
@@ -217,8 +225,9 @@ pub(crate) struct StatusEffect {
 
 impl StatusEffect {
 	/// Creates a [`StatusEffect`].
-	const fn new(power: f32, length: u64, effect_type: EffectType) -> Self {
+	const fn new(name: String, power: f32, length: u64, effect_type: EffectType) -> Self {
 		Self {
+			name,
 			power,
 			length,
 			last_cast: None,
@@ -238,7 +247,7 @@ impl StatusEffect {
 
 /// Currently active Statuseffects on an entity.
 #[derive(Reflect, Clone, Component, Default)]
-pub(crate) struct CurrentStatusEffects(Vec<StatusEffect>);
+pub(crate) struct CurrentStatusEffects(pub(crate) Vec<StatusEffect>);
 
 /// The ID of an ability.
 #[derive(Clone, Copy, Hash, Reflect, PartialEq, Eq, Default, PartialOrd, Ord)]
@@ -293,6 +302,8 @@ impl Spellbook {
 				(AbilityId(4), SpellbookAbility::default()),
 				(AbilityId(5), SpellbookAbility::default()),
 				(AbilityId(6), SpellbookAbility::default()),
+				(AbilityId(7), SpellbookAbility::default()),
+				(AbilityId(8), SpellbookAbility::default()),
 			]),
 		}
 	}
@@ -300,11 +311,11 @@ impl Spellbook {
 	/// Default spellbook for enemies.
 	fn default_enemy() -> Self {
 		Self {
-			autoattack_melee:  AbilityId(7),
-			autoattack_ranged: AbilityId(8),
+			autoattack_melee:  AbilityId(9),
+			autoattack_ranged: AbilityId(10),
 			abilities:         HashMap::from_iter([
-				(AbilityId(7), SpellbookAbility::default()),
-				(AbilityId(8), SpellbookAbility::default()),
+				(AbilityId(9), SpellbookAbility::default()),
+				(AbilityId(10), SpellbookAbility::default()),
 			]),
 		}
 	}
@@ -377,7 +388,7 @@ pub(crate) fn handle_ability_event(
 			continue;
 		}
 
-		let (target_entity, power) = match ability.effect {
+		let (target_entity, power) = match ability.effect.clone() {
 			AbilityEffect::Damage(power) => {
 				let AbilityEventTarget::Entity(entity) = ability_event.target else {
 					unreachable!("sent teleport spell on an entity")
@@ -385,9 +396,11 @@ pub(crate) fn handle_ability_event(
 
 				let mut power_modifier = 1.;
 
-				for buff in &caster_status_effect.0 {
-					if buff.effect_type == EffectType::AttackBuff {
-						power_modifier += buff.power;
+				for effect in &caster_status_effect.0 {
+					if effect.effect_type == EffectType::AttackBuff {
+						power_modifier += effect.power;
+					} else if effect.effect_type == EffectType::AttackDebuff {
+						power_modifier -= effect.power;
 					}
 				}
 
@@ -433,26 +446,26 @@ pub(crate) fn handle_ability_event(
 
 				continue;
 			}
-			AbilityEffect::Buff(mut buff) => {
+			AbilityEffect::StatusEffect(mut effect) => {
 				if ability.cooldown.is_some() {
 					spellbook_ability.last_cast = Some(state.turn);
 				}
 
-				buff.last_cast = Some(state.turn);
+				effect.last_cast = Some(state.turn);
 
-				let mut contains_buff = None;
+				let mut contains_effect = None;
 
-				for (index, old_buff) in caster_status_effect.0.iter().enumerate() {
-					if buff == *old_buff {
-						contains_buff = Some(index);
+				for (index, old_effect) in caster_status_effect.0.iter().enumerate() {
+					if effect == *old_effect {
+						contains_effect = Some(index);
 					}
 				}
 
-				if let Some(index) = contains_buff {
+				if let Some(index) = contains_effect {
 					caster_status_effect.0.remove(index);
 				}
 
-				caster_status_effect.0.push(buff);
+				caster_status_effect.0.push(effect);
 
 				state.turn += 1;
 				*animation_state = TurnState::EnemiesWaiting;
@@ -506,15 +519,17 @@ pub(crate) fn handle_ability_event(
 
 		let mut power_modifier = 1.;
 
-		for buff in &target_status_effect.0 {
-			if buff.effect_type == EffectType::DefensiveBuff {
-				power_modifier += buff.power;
+		for effect in &target_status_effect.0 {
+			if effect.effect_type == EffectType::DefensiveBuff {
+				power_modifier -= effect.power;
+			} else if effect.effect_type == EffectType::DefensiveDebuff {
+				power_modifier += effect.power;
 			}
 		}
 
 		target_health.current = target_health
 			.current
-			.saturating_sub((f32::from(power) / power_modifier) as u16);
+			.saturating_sub((f32::from(power) * power_modifier) as u16);
 		let target = caster_transform.translation
 			+ ((target_transform.translation.xy() - caster_transform.translation.xy()).normalize()
 				* 5.)
@@ -546,29 +561,66 @@ pub(crate) fn handle_ability_event(
 			(target_transform.translation.xy() - caster_transform.translation.xy()).normalize();
 		let rotate_to_enemy = Quat::from_rotation_arc(Vec3::Y, to_enemy.extend(0.));
 		if let Some(ability_animation) = &ability.animation {
-			commands.spawn((
-				AnimationAbility,
-				SpriteBundle {
-					texture: ability_animation.texture.clone(),
-					transform: Transform {
-						translation: caster_transform.translation,
-						rotation:    rotate_to_enemy,
-						scale:       (Vec2::ONE * ability_animation.scale).extend(1.),
-					},
-					..SpriteBundle::default()
-				},
-				Animator::new(
-					Tween::new(
-						EaseMethod::Linear,
-						ability_animation.duration,
-						TransformPositionLens {
-							start: caster_transform.translation,
-							end:   target_transform.translation,
+			if let AbilityEffect::Damage(_) = &ability.effect {
+				if let Some(atlas) = &ability_animation.atlas {
+					commands.spawn((
+						AnimationAbility,
+						SpriteBundle {
+							texture: ability_animation.texture.clone(),
+							transform: Transform {
+								translation: caster_transform.translation
+									+ ((target_transform.translation.xy()
+										- caster_transform.translation.xy())
+										* 0.6)
+										.extend(5.),
+								rotation:    rotate_to_enemy,
+								scale:       (Vec2::ONE * ability_animation.scale).extend(1.),
+							},
+							..SpriteBundle::default()
 						},
-					)
-					.with_completed_event(0),
-				),
-			));
+						TextureAtlas {
+							layout: atlas.0.clone(),
+							index:  0,
+						},
+						Animation {
+							timer:     Timer::from_seconds(
+								(ability_animation.duration / atlas.1 as u32).as_secs_f32(),
+								TimerMode::Repeating,
+							),
+							first:     0,
+							last:      atlas.1,
+							repeating: false,
+							anchor:    None,
+						},
+					));
+				} else {
+					commands.spawn((
+						AnimationAbility,
+						SpriteBundle {
+							texture: ability_animation.texture.clone(),
+							transform: Transform {
+								translation: caster_transform.translation.with_z(5.),
+								rotation:    rotate_to_enemy,
+								scale:       (Vec2::ONE * ability_animation.scale).extend(1.),
+							},
+							..SpriteBundle::default()
+						},
+						Animator::new(
+							Tween::new(
+								EaseMethod::Linear,
+								ability_animation.duration,
+								TransformPositionLens {
+									start: caster_transform.translation,
+									end:   target_transform.translation,
+								},
+							)
+							.with_completed_event(0),
+						),
+					));
+				}
+			} else {
+				unimplemented!()
+			}
 		}
 
 		if ability.cooldown.is_some() {
@@ -665,23 +717,23 @@ pub(crate) fn tick_cooldowns(
 	}
 }
 
-/// Ticks buffs currently on cooldown.
+/// Ticks status effects currently on cooldown.
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn tick_buffs(
+pub(crate) fn tick_status_effects(
 	state: ResMut<'_, GameState>,
-	mut buffs: Query<'_, '_, &mut CurrentStatusEffects>,
+	mut status_effects: Query<'_, '_, &mut CurrentStatusEffects>,
 ) {
 	if state.is_changed() {
-		for mut buffs in &mut buffs {
+		for mut effects in &mut status_effects {
 			let mut retain = vec![];
 
-			for buff in &mut buffs.0 {
-				if buff.turns_left(state.turn).is_some() {
-					retain.push(*buff);
+			for effect in &mut effects.0 {
+				if effect.turns_left(state.turn).is_some() {
+					retain.push(effect.clone());
 				}
 			}
 
-			buffs.0.retain(|&buff| retain.contains(&buff));
+			effects.0.retain(|effect| retain.contains(&effect));
 		}
 	}
 }

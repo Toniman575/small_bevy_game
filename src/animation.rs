@@ -33,9 +33,19 @@ pub(crate) struct AnimationAbility;
 pub(crate) fn animate(
 	mut commands: Commands<'_, '_>,
 	time: Res<'_, Time>,
-	mut query: Query<'_, '_, (Entity, &mut Sprite, &mut TextureAtlas, &mut Animation)>,
+	mut query: Query<
+		'_,
+		'_,
+		(
+			Entity,
+			&mut Sprite,
+			&mut TextureAtlas,
+			&mut Animation,
+			Has<AnimationAbility>,
+		),
+	>,
 ) {
-	for (entity, mut sprite, mut atlas, mut animation) in &mut query {
+	for (entity, mut sprite, mut atlas, mut animation, is_ability_animation) in &mut query {
 		if let Some(anchor) = animation.anchor {
 			sprite.anchor = anchor;
 		} else {
@@ -49,8 +59,13 @@ pub(crate) fn animate(
 				if animation.repeating {
 					animation.first
 				} else {
-					commands.entity(entity).remove::<Animation>();
-					return;
+					if is_ability_animation {
+						commands.entity(entity).despawn_recursive();
+					} else {
+						commands.entity(entity).remove::<Animation>();
+					}
+
+					continue;
 				}
 			} else {
 				atlas.index + 1

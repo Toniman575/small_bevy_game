@@ -1,5 +1,6 @@
 //! TODO:
 //! - Abilities
+//!   - Status Effects presentation.
 //!   - Implement tooltip.
 //!   - Make sure its easy to add new abilities.
 //!   - Add resources for abilities.
@@ -57,7 +58,7 @@ use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
 	SidePanel, Stroke, Widget,
 };
-use gameplay::{tick_buffs, Abilities, CurrentStatusEffects, StatusEffect};
+use gameplay::{tick_status_effects, Abilities, CurrentStatusEffects, EffectType, StatusEffect};
 
 use self::fow::{generate_fov, ApplyFoW};
 use self::gameplay::{
@@ -318,12 +319,20 @@ fn startup(
 	let props_id = contexts.add_image(props.clone_weak());
 	let arrow = asset_server.load::<Image>("arrow.webp");
 	let slash = asset_server.load::<Image>("slash.webp");
+	let slash_atlas = asset_server.add(TextureAtlasLayout::from_grid(
+		UVec2::splat(64),
+		7,
+		1,
+		None,
+		None,
+	));
 
 	let textures = Textures {
 		props,
 		props_id,
 		arrow,
 		slash,
+		slash_atlas,
 	};
 
 	commands.insert_resource(Abilities::new(&textures));
@@ -334,13 +343,15 @@ fn startup(
 #[derive(Resource)]
 struct Textures {
 	/// Dungeon tileset props.
-	props:    Handle<Image>,
+	props:       Handle<Image>,
 	/// EGUI texture handle to the dungeon tileset props.
-	props_id: TextureId,
+	props_id:    TextureId,
 	/// Arrow texture.
-	arrow:    Handle<Image>,
+	arrow:       Handle<Image>,
 	/// Slash attack texture.
-	slash:    Handle<Image>,
+	slash:       Handle<Image>,
+	/// Slash texture atlas layout.
+	slash_atlas: Handle<TextureAtlasLayout>,
 }
 
 /// Initialize states after level is spawned.
@@ -701,13 +712,29 @@ fn update_target_marker(
 					sprite.color = Color::WHITE;
 				}
 			}
-			AbilityEffect::Buff(_) => {
-				if *player_grid_coords == *marker_grid_coords {
-					sprite.color = GREEN.into();
-				} else {
-					sprite.color = RED.into();
+			AbilityEffect::StatusEffect(effect) => match effect.effect_type {
+				EffectType::DefensiveBuff | EffectType::AttackBuff => {
+					if *player_grid_coords == *marker_grid_coords {
+						sprite.color = GREEN.into();
+					} else {
+						sprite.color = RED.into();
+					}
 				}
-			}
+				EffectType::DefensiveDebuff | EffectType::AttackDebuff => {
+					if let Some(entity) = enemy {
+						if ability.in_euclidean_range(*player_grid_coords, *marker_grid_coords) {
+							sprite.color = RED.into();
+						} else {
+							sprite.color = YELLOW.into();
+						}
+
+						marker.set_if_neq(TargetingMarker(Some(*entity)));
+					} else {
+						sprite.color = Color::WHITE;
+						marker.set_if_neq(TargetingMarker(None));
+					}
+				}
+			},
 		}
 	}
 }
@@ -984,6 +1011,40 @@ fn ability_ui(
 		});
 }
 
+/// Shows the currently active [`StatusEffects`] and how long they will last on the player.
+#[allow(clippy::needless_pass_by_value)]
+fn player_effect_ui(
+	effects: Query<'_, '_, &CurrentStatusEffects, With<Player>>,
+	mut contexts: EguiContexts<'_, '_>,
+	state: Res<'_, GameState>,
+) {
+	let Some(context) = contexts.try_ctx_mut() else {
+		return;
+	};
+
+	let Ok(effects) = effects.get_single() else {
+		return;
+	};
+
+	Area::new(Id::new("current_status_effects"))
+		.anchor(Align2::LEFT_BOTTOM, [0., 0.])
+		.interactable(false)
+		.show(context, |ui| {
+			ui.vertical(|ui| {
+				for effect in &effects.0 {
+					ui.label(format!(
+						"{} {}",
+						effect.name,
+						effect.turns_left(state.turn).expect(
+							"if there are no turns left the statuseffect shouldn't be present 
+							 anymore"
+						)
+					));
+				}
+			})
+		});
+}
+
 fn main() {
 	App::new()
 		.add_plugins((
@@ -1023,8 +1084,8 @@ fn main() {
 			PostUpdate,
 			(
 				tick_cooldowns,
-				tick_buffs,
-				(turn_ui, item_ui, ability_ui).before(EguiSet::ProcessOutput),
+				tick_status_effects,
+				(turn_ui, item_ui, ability_ui, player_effect_ui).before(EguiSet::ProcessOutput),
 				animation::animate,
 				(
 					animation::finish_animation,

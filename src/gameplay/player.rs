@@ -17,7 +17,7 @@ use bevy_tweening::{Animator, EaseMethod, Tween};
 
 use super::{
 	Abilities, AbilityEffect, AbilityEvent, AbilityEventTarget, ActiveAbility,
-	CurrentStatusEffects, Health, Spellbook, Vision,
+	CurrentStatusEffects, EffectType, Health, Spellbook, Vision,
 };
 use crate::animation::Animation;
 use crate::{
@@ -340,13 +340,28 @@ pub(crate) fn cast_ability(
 					AbilityEventTarget::Entity(player_entity),
 				));
 			}
-		} else if let AbilityEffect::Buff(_) = ability.effect {
-			if player_grid_coords == target_grid_coords {
-				ability_events.send(AbilityEvent::new(
-					player_entity,
-					active_ability.0,
-					AbilityEventTarget::Entity(player_entity),
-				));
+		} else if let AbilityEffect::StatusEffect(effect) = ability.effect.clone() {
+			match effect.effect_type {
+				EffectType::DefensiveBuff | EffectType::AttackBuff => {
+					if player_grid_coords == target_grid_coords {
+						ability_events.send(AbilityEvent::new(
+							player_entity,
+							active_ability.0,
+							AbilityEventTarget::Entity(player_entity),
+						));
+					}
+				}
+				EffectType::DefensiveDebuff | EffectType::AttackDebuff => {
+					let Some(target_entity) = target_marker.0 else {
+						return;
+					};
+
+					ability_events.send(AbilityEvent::new(
+						player_entity,
+						active_ability.0,
+						AbilityEventTarget::Entity(target_entity),
+					));
+				}
 			}
 		} else {
 			let Some(target_entity) = target_marker.0 else {
