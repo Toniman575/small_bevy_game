@@ -1080,20 +1080,89 @@ fn player_effect_ui(
 		return;
 	};
 
-	Area::new(Id::new("current_status_effects"))
-		.anchor(Align2::LEFT_BOTTOM, [0., 0.])
-		.interactable(false)
+	SidePanel::left("effects")
+		.resizable(false)
+		.show_separator_line(false)
+		.frame(Frame::none())
 		.show(context, |ui| {
-			ui.vertical(|ui| {
+			ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
 				for effect in &effects.0 {
-					ui.label(format!(
-						"{} {}",
-						effect.name,
-						effect.turns_left(state.turn).expect(
-							"if there are no turns left the status effect shouldn't be present \
-							 anymore"
-						)
-					));
+					Frame::default()
+						.fill(Color32::BLACK)
+						.stroke(Stroke::new(2., Color32::WHITE))
+						.rounding(5.)
+						.show(ui, |ui| {
+							let (response, painter) = ui.allocate_painter(
+								egui::Vec2::new(64., 64.),
+								Sense {
+									click:     false,
+									drag:      false,
+									focusable: false,
+								},
+							);
+
+							/*painter.image(
+								textures.props_id,
+								response.rect,
+								egui::Rect::from([
+									Pos2::new(1. / 400. * 32., 1. / 400. * 64.),
+									Pos2::new(1. / 400. * 48., 1. / 400. * 80.),
+								]),
+								Color32::WHITE,
+							);*/
+
+							// Name.
+
+							// Text shadow.
+							painter.text(
+								(response.rect.right_top() - Pos2::new(4., -4.)).to_pos2(),
+								Align2::RIGHT_TOP,
+								&effect.name,
+								FontId {
+									size: 12.,
+									..FontId::default()
+								},
+								Color32::BLACK,
+							);
+
+							painter.text(
+								(response.rect.right_top() - Pos2::new(2., -2.)).to_pos2(),
+								Align2::RIGHT_TOP,
+								&effect.name,
+								FontId {
+									size: 12.,
+									..FontId::default()
+								},
+								Color32::WHITE,
+							);
+
+							// Duration
+
+							// Text shadow.
+							painter.text(
+								(response.rect.center() - Pos2::new(4., -4.)).to_pos2(),
+								Align2::CENTER_CENTER,
+								effect.turns_left(state.turn).unwrap(),
+								FontId {
+									size: 48.,
+									..FontId::default()
+								},
+								Color32::BLACK,
+							);
+
+							painter.text(
+								(response.rect.center() - Pos2::new(2., -2.)).to_pos2(),
+								Align2::CENTER_CENTER,
+								effect.turns_left(state.turn).unwrap(),
+								FontId {
+									size: 48.,
+									..FontId::default()
+								},
+								Color32::WHITE,
+							);
+
+							response
+						});
 				}
 			})
 		});
@@ -1139,7 +1208,8 @@ fn main() {
 			(
 				tick_cooldowns,
 				tick_status_effects,
-				(turn_ui, item_ui, ability_ui, player_effect_ui).before(EguiSet::ProcessOutput),
+				(((turn_ui, item_ui, ability_ui), player_effect_ui).chain())
+					.before(EguiSet::ProcessOutput),
 				animation::animate,
 				(
 					animation::finish_animation,
