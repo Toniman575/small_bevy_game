@@ -54,13 +54,22 @@ impl From<&EntityInstance> for Health {
 #[derive(Component)]
 pub(crate) struct HealthBar;
 
+/// Information about entities being remembered.
+#[derive(Reflect)]
+pub(crate) struct Memory {
+	/// The [`GridCoords`] the entity was last seen at.
+	pub(crate) coords:    GridCoords,
+	/// The turn the entity was last seen in.
+	pub(crate) last_seen: Option<u64>,
+}
+
 /// Component for tracking which tiles this entity sees.
 #[derive(Component, Reflect)]
 pub(crate) struct Vision {
 	/// List of currently visible tiles.
 	pub(crate) tiles:  Vec<GridCoords>,
 	/// Memory of seen entities not currently in vision.
-	pub(crate) memory: HashMap<Entity, GridCoords>,
+	pub(crate) memory: HashMap<Entity, Memory>,
 	/// How far the entity can see.
 	pub(crate) range:  u8,
 }
@@ -494,7 +503,7 @@ pub(crate) fn handle_ability_event(
 				_,
 				_,
 				mut target_health,
-				mut vision,
+				mut target_vision,
 				mut target_status_effect,
 				..,
 			),
@@ -502,12 +511,24 @@ pub(crate) fn handle_ability_event(
 
 		flip_sprite(*caster_grid_coord, *target_grid_coord, &mut sprite);
 
-		vision.memory.insert(caster_entity, *caster_grid_coord);
-
 		if caster_is_player {
+			target_vision.memory.insert(
+				caster_entity,
+				Memory {
+					coords:    *caster_grid_coord,
+					last_seen: None,
+				},
+			);
 			state.turn += 1;
 			*animation_state = TurnState::PlayerBusy(PlayerBusy::Casting);
 		} else if caster_is_enemy {
+			target_vision.memory.insert(
+				caster_entity,
+				Memory {
+					coords:    *caster_grid_coord,
+					last_seen: Some(state.turn),
+				},
+			);
 			*animation_state = TurnState::EnemiesBusy;
 		} else {
 			unreachable!("entity has to be enemy or player");

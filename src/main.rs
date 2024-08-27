@@ -1,6 +1,5 @@
 //! TODO:
 //! - Abilities
-//!   - Status Effects presentation.
 //!   - Implement tooltip.
 //!   - Make sure its easy to add new abilities.
 //!   - Add resources for abilities.
@@ -21,7 +20,7 @@
 //!   - Show all levels in debug mode.
 //!
 //! Bugs:
-//! - Enemies that attack the player from outside the vision range should become visible.
+//! - Possible crash when enemies move outside of players vision and re-entering vision again.
 //! - Sometimes levels are not despawned correctly, leading to false walls and doors being cached.
 //! - Fully loaded levels, before cleanup, can sometimes be seen for a single frame.
 
@@ -58,6 +57,7 @@ use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
 	SidePanel, Stroke, Widget,
 };
+use fow::update_memory;
 use gameplay::{tick_status_effects, Abilities, CurrentStatusEffects, EffectType, StatusEffect};
 
 use self::fow::{generate_fov, ApplyFoW};
@@ -1195,6 +1195,7 @@ fn main() {
 				}),
 				select_ability,
 				spawn_healthbar,
+				update_memory,
 				(door_interactions, cast_ability).run_if(|debug: Res<'_, TurnState>| {
 					matches!(debug.deref(), TurnState::PlayerWaiting)
 				}),

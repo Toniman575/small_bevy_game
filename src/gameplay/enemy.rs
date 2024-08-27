@@ -12,9 +12,11 @@ use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
 use pathfinding::prelude::astar;
 
-use super::{AbilityEvent, CurrentStatusEffects, Health, Player, Spellbook, Vision};
+use super::{
+	AbilityEvent, AbilityEventTarget, CurrentStatusEffects, Health, Memory, Player, Spellbook,
+	Vision,
+};
 use crate::animation::Animation;
-use crate::gameplay::AbilityEventTarget;
 use crate::util::{self, flip_sprite, OrderedNeighbors};
 use crate::{Destination, Drops, GameState, LevelCache, TurnState, GRID_SIZE};
 
@@ -158,17 +160,23 @@ pub(crate) fn move_enemies(
 
 		let old_player_pos = if enemy_vision.tiles.contains(player_pos) {
 			// If we see the player, update player position.
-			enemy_vision.memory.insert(player_entity, *player_pos);
+			enemy_vision.memory.insert(
+				player_entity,
+				Memory {
+					coords:    *player_pos,
+					last_seen: None,
+				},
+			);
 			player_pos
 		} else if let Some(old_player_pos) = enemy_vision.memory.get(&player_entity) {
 			// If we reached the memorized player position but the player wasn't here, delete the
 			// memory and stop.
-			if enemy_pos == old_player_pos {
+			if enemy_pos == &old_player_pos.coords {
 				enemy_vision.memory.remove(&player_entity).unwrap();
 				continue;
 			}
 
-			old_player_pos
+			&old_player_pos.coords
 		} else {
 			continue;
 		};
@@ -215,27 +223,29 @@ pub(crate) fn move_enemies(
 			.get_key_value(&spellbook.autoattack_melee)
 			.expect("there has to be a melee autoattack");
 
-		if old_player_pos == player_pos && destination == player_pos {
-			cast_ability.send(AbilityEvent::new(
-				enemy_entity,
-				*ability_id,
-				AbilityEventTarget::Entity(player_entity),
-			));
-			return;
-		}
-
-		if level_cache.enemies.contains_key(destination) {
-			if let Some((ability_id, _)) = spellbook
-				.abilities
-				.get_key_value(&spellbook.autoattack_ranged)
-			{
+		if old_player_pos == player_pos {
+			if destination == player_pos {
 				cast_ability.send(AbilityEvent::new(
 					enemy_entity,
 					*ability_id,
 					AbilityEventTarget::Entity(player_entity),
 				));
+				return;
 			}
-			return;
+
+			if level_cache.enemies.contains_key(destination) {
+				if let Some((ability_id, _)) = spellbook
+					.abilities
+					.get_key_value(&spellbook.autoattack_ranged)
+				{
+					cast_ability.send(AbilityEvent::new(
+						enemy_entity,
+						*ability_id,
+						AbilityEventTarget::Entity(player_entity),
+					));
+				}
+				return;
+			}
 		}
 
 		if player_vision.tiles.contains(destination) {

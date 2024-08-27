@@ -163,3 +163,24 @@ pub(crate) fn apply_fow(
 		}
 	}
 }
+
+/// Update player vision memory.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn update_memory(
+	mut commands: Commands<'_, '_>,
+	mut vision_query: Query<'_, '_, &mut Vision, With<Player>>,
+	game_state: ResMut<'_, GameState>,
+) {
+	let Ok(mut vision) = vision_query.get_single_mut() else {
+		return;
+	};
+
+	vision.memory.retain(|_, memory| {
+		if (game_state.turn - memory.last_seen.unwrap()) > 6 {
+			commands.trigger(ApplyFoW);
+			false
+		} else {
+			true
+		}
+	});
+}
