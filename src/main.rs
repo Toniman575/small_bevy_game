@@ -20,7 +20,6 @@
 //!   - Show all levels in debug mode.
 //!
 //! Bugs:
-//! - Possible crash when enemies move outside of players vision and re-entering vision again.
 //! - Sometimes levels are not despawned correctly, leading to false walls and doors being cached.
 //! - Fully loaded levels, before cleanup, can sometimes be seen for a single frame.
 
@@ -298,6 +297,8 @@ fn startup(
 		..PanCam::default()
 	});
 
+	commands.spawn(Turn(0));
+
 	commands
 		.spawn(LdtkWorldBundle {
 			ldtk_handle: asset_server.load("test.ldtk"),
@@ -533,8 +534,6 @@ fn door_trigger(
 #[derive(Default, Reflect, Resource)]
 #[reflect(Resource)]
 struct GameState {
-	/// The current turn.
-	turn:          u64,
 	/// State of each door.
 	doors:         HashMap<EntityIid, bool>,
 	/// State of each key.
@@ -546,6 +545,10 @@ struct GameState {
 	/// Tiles already seen by the player.
 	visited_tiles: HashMap<LevelIid, HashSet<GridCoords>>,
 }
+
+#[derive(Component, Default, Reflect, Resource, PartialEq, Eq)]
+/// The current turn.
+struct Turn(u64);
 
 /// Stores debug state.
 #[derive(Default, Resource)]
@@ -764,7 +767,7 @@ fn update_target_marker(
 						valid,
 					});
 				}
-				EffectType::DefensiveDebuff | EffectType::AttackDebuff => {
+				EffectType::DefensiveDebuff | EffectType::AttackDebuff | EffectType::Dot => {
 					if let Some(entity) = enemy {
 						let valid = if ability
 							.in_euclidean_range(*player_grid_coords, *marker_grid_coords)
@@ -905,7 +908,7 @@ fn item_ui(
 
 /// Turn counter UI.
 #[allow(clippy::needless_pass_by_value)]
-fn turn_ui(state: Res<'_, GameState>, mut contexts: EguiContexts<'_, '_>) {
+fn turn_ui(turn_q: Query<'_, '_, &Turn>, mut contexts: EguiContexts<'_, '_>) {
 	let Some(context) = contexts.try_ctx_mut() else {
 		return;
 	};
@@ -920,7 +923,7 @@ fn turn_ui(state: Res<'_, GameState>, mut contexts: EguiContexts<'_, '_>) {
 				.inner_margin(Margin::symmetric(6., 4.))
 				.show(ui, |ui| {
 					Label::new(
-						RichText::new(format!("Turn: {}", state.turn))
+						RichText::new(format!("Turn: {}", turn_q.single().0))
 							.color(Color32::WHITE)
 							.size(24.),
 					)
@@ -937,7 +940,7 @@ fn ability_ui(
 	mut player: Query<'_, '_, (&Spellbook, &mut ActiveAbility), With<Player>>,
 	abilites: Res<'_, Abilities>,
 	mut contexts: EguiContexts<'_, '_>,
-	state: Res<'_, GameState>,
+	turn_q: Query<'_, '_, &Turn>,
 ) {
 	let Ok((spellbook, mut active_ability)) = player.get_single_mut() else {
 		return;
@@ -974,7 +977,7 @@ fn ability_ui(
 
 					#[allow(clippy::option_if_let_else)]
 					let (text, text_color) = if let Some(cooldown_left) =
-						spellbook_ability.cooldown_left(ability, state.turn)
+						spellbook_ability.cooldown_left(ability, turn_q.single().0)
 					{
 						(&format!("{} ({cooldown_left})", ability.name), Color32::RED)
 					} else {
@@ -1070,7 +1073,7 @@ fn ability_ui(
 fn player_effect_ui(
 	effects: Query<'_, '_, &CurrentStatusEffects, With<Player>>,
 	mut contexts: EguiContexts<'_, '_>,
-	state: Res<'_, GameState>,
+	turn_q: Query<'_, '_, &Turn>,
 ) {
 	let Some(context) = contexts.try_ctx_mut() else {
 		return;
@@ -1138,11 +1141,13 @@ fn player_effect_ui(
 
 							// Duration
 
+							let turn = turn_q.single().0;
+
 							// Text shadow.
 							painter.text(
 								(response.rect.center() - Pos2::new(4., -4.)).to_pos2(),
 								Align2::CENTER_CENTER,
-								effect.turns_left(state.turn).unwrap(),
+								effect.turns_left(turn).unwrap(),
 								FontId {
 									size: 48.,
 									..FontId::default()
@@ -1153,7 +1158,7 @@ fn player_effect_ui(
 							painter.text(
 								(response.rect.center() - Pos2::new(2., -2.)).to_pos2(),
 								Align2::CENTER_CENTER,
-								effect.turns_left(state.turn).unwrap(),
+								effect.turns_left(turn).unwrap(),
 								FontId {
 									size: 48.,
 									..FontId::default()
@@ -1249,6 +1254,7 @@ fn main() {
 		.register_type::<GameState>()
 		.register_type::<TurnState>()
 		.register_type::<Spellbook>()
+		.register_type::<Turn>()
 		.observe(door_trigger)
 		.observe(fow::apply_fow)
 		.observe(animation::arrived_at_tile)

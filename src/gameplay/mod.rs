@@ -23,7 +23,9 @@ pub(crate) use self::player::{
 };
 use crate::animation::{Animation, AnimationAbility, ArrivedAtTile};
 use crate::util::{flip_sprite, OrderedNeighbors};
-use crate::{util, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, Textures, TurnState};
+use crate::{
+	util, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, Textures, Turn, TurnState,
+};
 
 /// Component for tracking health in entities.
 #[derive(Clone, Component, Debug, Default, Reflect, PartialEq, Eq, Copy)]
@@ -204,6 +206,8 @@ impl Ability {
 /// The types of Statuseffects.
 #[derive(Reflect, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum EffectType {
+	/// Damages the target over time.
+	Dot,
 	/// Strengthen the Defense of the caster.
 	DefensiveBuff,
 	/// Strengthen the Attack of the caster.
@@ -310,6 +314,7 @@ impl Spellbook {
 				(AbilityId(6), SpellbookAbility::default()),
 				(AbilityId(7), SpellbookAbility::default()),
 				(AbilityId(8), SpellbookAbility::default()),
+				(AbilityId(9), SpellbookAbility::default()),
 			]),
 		}
 	}
@@ -317,11 +322,11 @@ impl Spellbook {
 	/// Default spellbook for enemies.
 	fn default_enemy() -> Self {
 		Self {
-			autoattack_melee:  AbilityId(9),
-			autoattack_ranged: AbilityId(10),
+			autoattack_melee:  AbilityId(10),
+			autoattack_ranged: AbilityId(11),
 			abilities:         HashMap::from_iter([
-				(AbilityId(9), SpellbookAbility::default()),
 				(AbilityId(10), SpellbookAbility::default()),
+				(AbilityId(11), SpellbookAbility::default()),
 			]),
 		}
 	}
@@ -344,7 +349,7 @@ pub(crate) struct ActiveAbility(pub(crate) AbilityId);
 )]
 pub(crate) fn handle_ability_event(
 	mut commands: Commands<'_, '_>,
-	mut state: ResMut<'_, GameState>,
+	mut turn: Query<'_, '_, &mut Turn>,
 	abilities: Res<'_, Abilities>,
 	mut entities_q: Query<
 		'_,
@@ -365,6 +370,8 @@ pub(crate) fn handle_ability_event(
 	mut ability_events: EventReader<'_, '_, AbilityEvent>,
 	mut animation_state: ResMut<'_, TurnState>,
 ) {
+	let mut turn = turn.single_mut();
+
 	for ability_event in ability_events.read() {
 		let (
 			caster_entity,
@@ -414,12 +421,12 @@ pub(crate) fn handle_ability_event(
 			}
 			AbilityEffect::Healing(power) => {
 				if ability.cooldown.is_some() {
-					spellbook_ability.last_cast = Some(state.turn);
+					spellbook_ability.last_cast = Some(turn.0);
 				}
 
 				health.current = (health.current + power).min(health.max);
 
-				state.turn += 1;
+				turn.0 += 1;
 				*animation_state = TurnState::EnemiesWaiting;
 
 				continue;
@@ -434,24 +441,24 @@ pub(crate) fn handle_ability_event(
 				caster_grid_coord.set_if_neq(target_grid_coord);
 
 				if ability.cooldown.is_some() {
-					spellbook_ability.last_cast = Some(state.turn);
+					spellbook_ability.last_cast = Some(turn.0);
 				}
 
 				commands.trigger_targets(ArrivedAtTile, caster_entity);
 
-				state.turn += 1;
+				turn.0 += 1;
 				*animation_state = TurnState::EnemiesWaiting;
 
 				continue;
 			}
 			AbilityEffect::StatusEffect(mut effect) => {
 				if ability.cooldown.is_some() {
-					spellbook_ability.last_cast = Some(state.turn);
+					spellbook_ability.last_cast = Some(turn.0);
 				}
 
 				match effect.effect_type {
 					EffectType::DefensiveBuff | EffectType::AttackBuff => {
-						effect.last_cast = Some(state.turn);
+						effect.last_cast = Some(turn.0);
 
 						let mut contains_effect = None;
 
@@ -467,12 +474,12 @@ pub(crate) fn handle_ability_event(
 
 						caster_status_effect.0.push(effect);
 
-						state.turn += 1;
+						turn.0 += 1;
 						*animation_state = TurnState::EnemiesWaiting;
 
 						continue;
 					}
-					EffectType::DefensiveDebuff | EffectType::AttackDebuff => {
+					EffectType::DefensiveDebuff | EffectType::AttackDebuff | EffectType::Dot => {
 						let AbilityEventTarget::Entity(entity) = ability_event.target else {
 							unreachable!("sent wrong event target")
 						};
@@ -519,14 +526,14 @@ pub(crate) fn handle_ability_event(
 					last_seen: None,
 				},
 			);
-			state.turn += 1;
+			turn.0 += 1;
 			*animation_state = TurnState::PlayerBusy(PlayerBusy::Casting);
 		} else if caster_is_enemy {
 			target_vision.memory.insert(
 				caster_entity,
 				Memory {
 					coords:    *caster_grid_coord,
-					last_seen: Some(state.turn),
+					last_seen: Some(turn.0),
 				},
 			);
 			*animation_state = TurnState::EnemiesBusy;
@@ -633,7 +640,7 @@ pub(crate) fn handle_ability_event(
 				.get_mut(&ability_event.ability)
 				.expect("requested non-existing ability");
 
-			spellbook_ability.last_cast = Some(state.turn);
+			spellbook_ability.last_cast = Some(turn.0);
 		}
 
 		if let AbilityEffect::StatusEffect(effect) = &ability.effect {
@@ -650,7 +657,7 @@ pub(crate) fn handle_ability_event(
 			}
 
 			let mut effect = effect.clone();
-			effect.last_cast = Some(state.turn);
+			effect.last_cast = Some(turn.0);
 
 			target_status_effect.0.push(effect);
 
@@ -736,19 +743,16 @@ pub(crate) fn update_healthbar(
 /// Ticks abilities currently on cooldown.
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn tick_cooldowns(
-	state: ResMut<'_, GameState>,
+	turn: Query<'_, '_, &Turn>,
 	abilities: Res<'_, Abilities>,
 	mut spellbooks: Query<'_, '_, &mut Spellbook>,
 ) {
-	if state.is_changed() {
+	if let Ok(turn) = turn.get_single() {
 		for mut spellbook in &mut spellbooks {
 			for (id, spellbook_ability) in &mut spellbook.abilities {
 				let ability = abilities.0.get(id).expect("found non-existing ability");
 
-				if spellbook_ability
-					.cooldown_left(ability, state.turn)
-					.is_none()
-				{
+				if spellbook_ability.cooldown_left(ability, turn.0).is_none() {
 					spellbook_ability.last_cast = None;
 				}
 			}
@@ -759,14 +763,25 @@ pub(crate) fn tick_cooldowns(
 /// Ticks status effects currently on cooldown.
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn tick_status_effects(
-	state: ResMut<'_, GameState>,
-	mut status_effects: Query<'_, '_, &mut CurrentStatusEffects>,
+	turn: Query<'_, '_, &Turn, Changed<Turn>>,
+	mut status_effects: Query<'_, '_, (&mut CurrentStatusEffects, &mut Health)>,
 ) {
-	if state.is_changed() {
-		for mut effects in &mut status_effects {
+	if let Ok(turn) = turn.get_single() {
+		for (mut effects, mut health) in &mut status_effects {
+			for effect in &effects.0 {
+				#[allow(
+					clippy::as_conversions,
+					clippy::cast_possible_truncation,
+					clippy::cast_sign_loss
+				)]
+				if effect.effect_type == EffectType::Dot {
+					health.current = health.current.saturating_sub(effect.power as u16);
+				}
+			}
+
 			effects
 				.0
-				.retain(|effect| effect.turns_left(state.turn).is_some());
+				.retain(|effect| effect.turns_left(turn.0).is_some());
 		}
 	}
 }

@@ -22,7 +22,7 @@ use super::{
 use crate::animation::Animation;
 use crate::{
 	Destination, DoorOpen, GameState, LevelCache, PlayerBusy, PlayerEntityDestination,
-	TargetingMarker, TurnState, GRID_SIZE,
+	TargetingMarker, Turn, TurnState, GRID_SIZE,
 };
 
 /// Player marker component.
@@ -106,7 +106,8 @@ impl PlayerBundle {
 	clippy::type_complexity
 )]
 pub(crate) fn player_movement(
-	mut state: ResMut<'_, GameState>,
+	state: ResMut<'_, GameState>,
+	mut turn_q: Query<'_, '_, &mut Turn>,
 	mut commands: Commands<'_, '_>,
 	mut inputs: EventReader<'_, '_, KeyboardInput>,
 	mut player: Query<
@@ -142,6 +143,8 @@ pub(crate) fn player_movement(
 				None
 			}
 		})) {
+		let mut turn = turn_q.single_mut();
+
 		let (direction, flip) = match keycode {
 			KeyCode::KeyW => (GridCoords::new(0, 1), None),
 			KeyCode::KeyA => (GridCoords::new(-1, 0), Some(true)),
@@ -152,7 +155,7 @@ pub(crate) fn player_movement(
 			KeyCode::KeyZ => (GridCoords::new(-1, -1), Some(true)),
 			KeyCode::KeyC => (GridCoords::new(1, -1), Some(false)),
 			KeyCode::Space => {
-				state.turn += 1;
+				turn.set_if_neq(Turn(turn.0 + 1));
 				*animation_state = TurnState::EnemiesWaiting;
 				return;
 			}
@@ -172,7 +175,7 @@ pub(crate) fn player_movement(
 
 		match level_cache.destination(&state.doors, *grid_pos, destination) {
 			Destination::Walkable => {
-				state.turn += 1;
+				turn.set_if_neq(Turn(turn.0 + 1));
 				*animation_state = TurnState::PlayerBusy(PlayerBusy::Moving);
 
 				let mut player = commands.entity(player_entity);
@@ -214,7 +217,7 @@ pub(crate) fn player_movement(
 }
 
 /// Opens and closes doors.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 pub(crate) fn door_interactions(
 	mut commands: Commands<'_, '_>,
 	mut state: ResMut<'_, GameState>,
@@ -223,6 +226,7 @@ pub(crate) fn door_interactions(
 	tile_map_size: Query<'_, '_, &TilemapSize>,
 	player: Query<'_, '_, &GridCoords, With<Player>>,
 	mut input: EventReader<'_, '_, KeyboardInput>,
+	mut turn_q: Query<'_, '_, &mut Turn>,
 ) {
 	let Some(input) = input.read().next() else {
 		return;
@@ -249,16 +253,14 @@ pub(crate) fn door_interactions(
 		{
 			if let Some((entity, iid, door)) = level_cache.doors.get(&GridCoords::from(*tile_pos)) {
 				let GameState {
-					turn,
-					doors,
-					player_keys,
-					..
+					doors, player_keys, ..
 				} = state.deref_mut();
 
 				let open = doors.get_mut(iid).unwrap();
 
 				if !*open && *player_keys > 0 {
-					*turn += 1;
+					let mut turn = turn_q.single_mut();
+					turn.set_if_neq(Turn(turn.0 + 1));
 					*animation_state = TurnState::EnemiesWaiting;
 
 					*open = true;
@@ -328,7 +330,7 @@ pub(crate) fn cast_ability(
 						));
 					}
 				}
-				EffectType::DefensiveDebuff | EffectType::AttackDebuff => {
+				EffectType::DefensiveDebuff | EffectType::AttackDebuff | EffectType::Dot => {
 					ability_events.send(AbilityEvent::new(
 						player_entity,
 						active_ability.0,

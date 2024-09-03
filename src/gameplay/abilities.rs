@@ -5,7 +5,7 @@ use std::time::Duration;
 use bevy::prelude::*;
 use bevy::utils::HashMap;
 
-use super::EffectType::{AttackBuff, AttackDebuff, DefensiveBuff, DefensiveDebuff};
+use super::EffectType::{AttackBuff, AttackDebuff, DefensiveBuff, DefensiveDebuff, Dot};
 use super::{Ability, AbilityEffect, AbilityId, StatusEffect};
 use crate::Textures;
 
@@ -150,6 +150,22 @@ impl Abilities {
 			(
 				AbilityId(9),
 				Ability::new(
+					String::from("Dot"),
+					3,
+					None,
+					AbilityEffect::StatusEffect(StatusEffect::new(
+						String::from("Bleed"),
+						2.,
+						3,
+						Dot,
+					)),
+					Some(5),
+					None,
+				),
+			),
+			(
+				AbilityId(10),
+				Ability::new(
 					String::from("Autoattack"),
 					1,
 					None,
@@ -159,7 +175,7 @@ impl Abilities {
 				),
 			),
 			(
-				AbilityId(10),
+				AbilityId(11),
 				Ability::new(
 					String::from("Ranged"),
 					2,

@@ -8,7 +8,7 @@ use bevy_ecs_ldtk::{GridCoords, LevelSelection};
 use bevy_ecs_tilemap::tiles::{TileColor, TileVisible};
 
 use crate::gameplay::{Enemy, Player, Vision};
-use crate::{util, Debug, Door, GameState, Key, LevelCache};
+use crate::{util, Debug, Door, GameState, Key, LevelCache, Turn};
 
 /// Calculates the field of view from an entity with [`Vision`].
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
@@ -169,14 +169,14 @@ pub(crate) fn apply_fow(
 pub(crate) fn update_memory(
 	mut commands: Commands<'_, '_>,
 	mut vision_query: Query<'_, '_, &mut Vision, With<Player>>,
-	game_state: ResMut<'_, GameState>,
+	turn_q: Query<'_, '_, &Turn>,
 ) {
 	let Ok(mut vision) = vision_query.get_single_mut() else {
 		return;
 	};
 
 	vision.memory.retain(|_, memory| {
-		if (game_state.turn - memory.last_seen.unwrap()) > 6 {
+		if (turn_q.single().0 - memory.last_seen.unwrap()) > 6 {
 			commands.trigger(ApplyFoW);
 			false
 		} else {

@@ -248,6 +248,10 @@ pub(crate) fn move_enemies(
 			}
 		}
 
+		if level_cache.enemies.contains_key(destination) {
+			continue;
+		}
+
 		if player_vision.tiles.contains(destination) {
 			enemy_visibility.set_if_neq(Visibility::Inherited);
 		}
@@ -274,7 +278,11 @@ pub(crate) fn move_enemies(
 			.enemies
 			.remove(enemy_pos)
 			.expect("found no enemy at the moved position");
-		assert_eq!(enemy, enemy_entity, "wrong enemy found in level cache");
+		assert_eq!(
+			enemy, enemy_entity,
+			"wrong enemy found in level cache: searching for {:?} in {:?}",
+			enemy_pos, level_cache.enemies
+		);
 		level_cache.enemies.insert(*destination, enemy);
 
 		*turn_state = TurnState::EnemiesBusy;
