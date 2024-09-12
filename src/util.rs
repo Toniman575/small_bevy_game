@@ -41,7 +41,7 @@ pub(crate) fn flip_sprite(
 	let dy = target_grid_coord.y - origin_grid_coord.y;
 	let degrees = f64::atan2(dy.into(), dx.into()).to_degrees();
 
-	#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+	#[expect(clippy::as_conversions, clippy::cast_possible_truncation)]
 	match degrees.round() as i16 {
 		-89..90 => sprite.flip_x = false,
 		-180..-90 | 91..=180 => sprite.flip_x = true,

@@ -7,7 +7,7 @@ use bevy::utils::HashMap;
 
 use super::EffectType::{AttackBuff, AttackDebuff, DefensiveBuff, DefensiveDebuff, Dot};
 use super::{Ability, AbilityEffect, AbilityId, StatusEffect};
-use crate::Textures;
+use crate::{TextureIcon, Textures};
 
 /// The list of all abilities.
 #[derive(Resource, Reflect)]
@@ -15,17 +15,18 @@ pub(crate) struct Abilities(pub(crate) HashMap<AbilityId, Ability>);
 
 impl Abilities {
 	/// All abilities currently in the game.
-	#[allow(clippy::too_many_lines)]
+	#[expect(clippy::too_many_lines)]
 	pub(crate) fn new(textures: &Textures) -> Self {
 		Self(HashMap::from([
 			(
 				AbilityId(0),
 				Ability::new(
-					String::from("Autoattack"),
+					String::from("Stab"),
 					1,
 					None,
 					AbilityEffect::Damage(5),
 					None,
+					Some(TextureIcon::AutoAttack),
 					None,
 				),
 			),
@@ -37,6 +38,7 @@ impl Abilities {
 					None,
 					AbilityEffect::Damage(3),
 					None,
+					Some(TextureIcon::Arrow),
 					Some(super::AbilityAnimation {
 						texture:  textures.arrow.clone(),
 						duration: Duration::from_secs_f64(0.2),
@@ -53,11 +55,12 @@ impl Abilities {
 					None,
 					AbilityEffect::Damage(10),
 					Some(3),
+					None,
 					Some(super::AbilityAnimation {
-						texture:  textures.slash.clone(),
+						texture:  textures.slash_animation.clone(),
 						duration: Duration::from_secs_f64(0.25),
 						scale:    0.5,
-						atlas:    Some((textures.slash_atlas.clone(), 6)),
+						atlas:    Some((textures.slash_animation_atlas.clone(), 6)),
 					}),
 				),
 			),
@@ -70,6 +73,7 @@ impl Abilities {
 					AbilityEffect::Healing(10),
 					Some(10),
 					None,
+					None,
 				),
 			),
 			(
@@ -79,6 +83,7 @@ impl Abilities {
 					5,
 					Some(0),
 					AbilityEffect::Teleport,
+					None,
 					None,
 					None,
 				),
@@ -97,6 +102,7 @@ impl Abilities {
 					)),
 					Some(5),
 					None,
+					None,
 				),
 			),
 			(
@@ -112,6 +118,7 @@ impl Abilities {
 						AttackBuff,
 					)),
 					Some(5),
+					None,
 					None,
 				),
 			),
@@ -129,6 +136,7 @@ impl Abilities {
 					)),
 					Some(5),
 					None,
+					None,
 				),
 			),
 			(
@@ -144,6 +152,7 @@ impl Abilities {
 						AttackDebuff,
 					)),
 					Some(5),
+					None,
 					None,
 				),
 			),
@@ -161,15 +170,17 @@ impl Abilities {
 					)),
 					Some(5),
 					None,
+					None,
 				),
 			),
 			(
 				AbilityId(10),
 				Ability::new(
-					String::from("Autoattack"),
+					String::from("Skeleton Brawl"),
 					1,
 					None,
 					AbilityEffect::Damage(3),
+					None,
 					None,
 					None,
 				),
@@ -177,10 +188,35 @@ impl Abilities {
 			(
 				AbilityId(11),
 				Ability::new(
-					String::from("Ranged"),
+					String::from("Bone Throw"),
 					2,
 					None,
 					AbilityEffect::Damage(1),
+					Some(2),
+					None,
+					None,
+				),
+			),
+			(
+				AbilityId(12),
+				Ability::new(
+					String::from("Skeleton Fireball"),
+					5,
+					None,
+					AbilityEffect::Damage(10),
+					Some(5),
+					None,
+					None,
+				),
+			),
+			(
+				AbilityId(13),
+				Ability::new(
+					String::from("Charge"),
+					3,
+					None,
+					AbilityEffect::Charge(5),
+					Some(3),
 					None,
 					None,
 				),

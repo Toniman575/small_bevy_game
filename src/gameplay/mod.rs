@@ -12,19 +12,22 @@ use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
 use bevy::utils::{HashMap, HashSet};
 use bevy_ecs_ldtk::prelude::*;
+use bevy_ecs_ldtk::utils;
 use bevy_ecs_tilemap::map::TilemapSize;
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
+use line_drawing::WalkGrid;
 
 pub(crate) use self::abilities::Abilities;
-pub(crate) use self::enemy::{move_enemies, Enemy, EnemyBundle};
+pub(crate) use self::enemy::{move_enemies, BaseSkeletonBundle, Enemy, MageSkeletonBundle};
 pub(crate) use self::player::{
 	cast_ability, door_interactions, player_movement, select_ability, Player, PlayerBundle,
 };
 use crate::animation::{Animation, AnimationAbility, ArrivedAtTile};
 use crate::util::{flip_sprite, OrderedNeighbors};
 use crate::{
-	util, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, Textures, Turn, TurnState,
+	util, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, TextureIcon, Textures, Turn,
+	TurnState, GRID_SIZE,
 };
 
 /// Component for tracking health in entities.
@@ -36,7 +39,6 @@ pub(crate) struct Health {
 	pub(crate) max:     u16,
 }
 
-#[allow(clippy::fallible_impl_from)]
 impl From<&EntityInstance> for Health {
 	fn from(entity_instance: &EntityInstance) -> Self {
 		let reference = *entity_instance
@@ -136,6 +138,8 @@ pub(crate) enum AbilityEffect {
 	StatusEffect(StatusEffect),
 	/// Teleports.
 	Teleport,
+	/// Charge.
+	Charge(u16),
 }
 
 /// Holds animation data.
@@ -164,6 +168,8 @@ pub(crate) struct Ability {
 	pub(crate) effect:    AbilityEffect,
 	/// The Cooldown of the ability.
 	cooldown:             Option<u8>,
+	/// Icon to use.
+	pub(crate) icon:      Option<TextureIcon>,
 	/// Animation data.
 	pub(crate) animation: Option<AbilityAnimation>,
 }
@@ -176,6 +182,7 @@ impl Ability {
 		aoe: Option<u8>,
 		effect: AbilityEffect,
 		cooldown: Option<u8>,
+		icon: Option<TextureIcon>,
 		animation: Option<AbilityAnimation>,
 	) -> Self {
 		Self {
@@ -184,6 +191,7 @@ impl Ability {
 			aoe,
 			effect,
 			cooldown,
+			icon,
 			animation,
 		}
 	}
@@ -291,43 +299,49 @@ impl SpellbookAbility {
 #[derive(Reflect, Component)]
 pub(crate) struct Spellbook {
 	/// The Id of a melee autoattack of an entity.
-	pub(crate) autoattack_melee:  AbilityId,
+	pub(crate) autoattack_melee:  Option<AbilityId>,
 	/// The Id of a ranged autoattack of an entity.
-	pub(crate) autoattack_ranged: AbilityId,
+	pub(crate) autoattack_ranged: Option<AbilityId>,
+	/// The Id of a charge attack of an entity.
+	pub(crate) charge: Option<AbilityId>,
 	/// All abilities an entity can cast.
 	pub(crate) abilities:         HashMap<AbilityId, SpellbookAbility>,
 }
 
 impl Spellbook {
-	/// Default spellbook for player.
+	/// Default spellbook for the player.
 	fn default_player() -> Self {
 		Self {
-			autoattack_melee:  AbilityId(0),
-			autoattack_ranged: AbilityId(1),
+			autoattack_melee:  Some(AbilityId(0)),
+			autoattack_ranged: Some(AbilityId(1)),
+			charge: None,
 			abilities:         HashMap::from_iter([
 				(AbilityId(0), SpellbookAbility::default()),
 				(AbilityId(1), SpellbookAbility::default()),
-				(AbilityId(2), SpellbookAbility::default()),
-				(AbilityId(3), SpellbookAbility::default()),
-				(AbilityId(4), SpellbookAbility::default()),
-				(AbilityId(5), SpellbookAbility::default()),
-				(AbilityId(6), SpellbookAbility::default()),
-				(AbilityId(7), SpellbookAbility::default()),
-				(AbilityId(8), SpellbookAbility::default()),
-				(AbilityId(9), SpellbookAbility::default()),
 			]),
 		}
 	}
 
-	/// Default spellbook for enemies.
-	fn default_enemy() -> Self {
+	/// Default spellbook for Base Skeletons.
+	fn base_skeleton() -> Self {
 		Self {
-			autoattack_melee:  AbilityId(10),
-			autoattack_ranged: AbilityId(11),
+			autoattack_melee:  Some(AbilityId(10)),
+			autoattack_ranged: Some(AbilityId(11)),
+			charge: Some(AbilityId(13)),
 			abilities:         HashMap::from_iter([
 				(AbilityId(10), SpellbookAbility::default()),
 				(AbilityId(11), SpellbookAbility::default()),
 			]),
+		}
+	}
+
+	/// Default spellbook for Mage Skeletons.
+	fn mage_skeleton() -> Self {
+		Self {
+			autoattack_melee:  None,
+			autoattack_ranged: Some(AbilityId(12)),
+			charge: None,
+			abilities:         HashMap::from_iter([(AbilityId(12), SpellbookAbility::default())]),
 		}
 	}
 }
@@ -337,11 +351,10 @@ impl Spellbook {
 pub(crate) struct ActiveAbility(pub(crate) AbilityId);
 
 /// Handles when an entity wants to cast an ability.
-#[allow(
+#[expect(
 	clippy::needless_pass_by_value,
 	clippy::too_many_lines,
 	clippy::type_complexity,
-	clippy::too_many_arguments,
 	clippy::cast_possible_truncation,
 	clippy::cast_sign_loss,
 	clippy::as_conversions,
@@ -488,6 +501,13 @@ pub(crate) fn handle_ability_event(
 					}
 				}
 			}
+			AbilityEffect::Charge(power) => {
+				let AbilityEventTarget::Entity(entity) = ability_event.target else {
+					unreachable!("sent wrong event target")
+				};
+
+				(entity, power)
+			}
 		};
 
 		let [
@@ -527,7 +547,9 @@ pub(crate) fn handle_ability_event(
 				},
 			);
 			turn.0 += 1;
-			*animation_state = TurnState::PlayerBusy(PlayerBusy::Casting);
+			*animation_state = TurnState::PlayerBusy(PlayerBusy::Casting {
+				camera: matches!(ability.effect, AbilityEffect::Charge(_)),
+			});
 		} else if caster_is_enemy {
 			target_vision.memory.insert(
 				caster_entity,
@@ -541,32 +563,56 @@ pub(crate) fn handle_ability_event(
 			unreachable!("entity has to be enemy or player");
 		}
 
-		let target = caster_transform.translation
-			+ ((target_transform.translation.xy() - caster_transform.translation.xy()).normalize()
-				* 5.)
+		if let AbilityEffect::Charge(_) = &ability.effect {
+			let target = WalkGrid::new(
+				IVec2::from(*target_grid_coord).into(),
+				IVec2::from(*caster_grid_coord).into(),
+			)
+			.nth(1)
+			.unwrap();
+			let target = GridCoords::from(IVec2::from(target));
+			let target = utils::grid_coords_to_translation(target, IVec2::splat(GRID_SIZE))
 				.extend(caster_transform.translation.z);
 
-		commands.entity(caster_entity).insert((Animator::new(
-			Tween::new(
-				EaseMethod::Linear,
-				Duration::from_secs_f64(0.1),
-				TransformPositionLens {
-					start: caster_transform.translation,
-					end:   target,
-				},
-			)
-			.then(
+			commands.entity(caster_entity).insert(Animator::new(
+				Tween::new(
+					EaseMethod::Linear,
+					Duration::from_secs_f64(0.2),
+					TransformPositionLens {
+						start: caster_transform.translation,
+						end:   target,
+					},
+				)
+				.with_completed_event(0),
+			));
+		} else {
+			let target = caster_transform.translation
+				+ ((target_transform.translation.xy() - caster_transform.translation.xy())
+					.normalize() * 5.)
+					.extend(caster_transform.translation.z);
+
+			commands.entity(caster_entity).insert(Animator::new(
 				Tween::new(
 					EaseMethod::Linear,
 					Duration::from_secs_f64(0.1),
 					TransformPositionLens {
-						start: target,
-						end:   caster_transform.translation,
+						start: caster_transform.translation,
+						end:   target,
 					},
 				)
-				.with_completed_event(0),
-			),
-		),));
+				.then(
+					Tween::new(
+						EaseMethod::Linear,
+						Duration::from_secs_f64(0.1),
+						TransformPositionLens {
+							start: target,
+							end:   caster_transform.translation,
+						},
+					)
+					.with_completed_event(0),
+				),
+			));
+		}
 
 		let to_enemy =
 			(target_transform.translation.xy() - caster_transform.translation.xy()).normalize();
@@ -681,7 +727,7 @@ pub(crate) fn handle_ability_event(
 }
 
 /// When an Entity with a healthbar is spawned we spawn a mesh to represent it.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 pub(crate) fn spawn_healthbar(
 	added: Query<'_, '_, (Entity, Option<&Enemy>), Added<Health>>,
 	mut commands: Commands<'_, '_>,
@@ -710,7 +756,7 @@ pub(crate) fn spawn_healthbar(
 }
 
 /// Update size and position of the Healthbar.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 pub(crate) fn update_healthbar(
 	changed: Query<'_, '_, (Entity, &Health, &Children, Option<&Enemy>), Changed<Health>>,
 	mut transforms: Query<'_, '_, (&mut Visibility, &mut Transform), With<HealthBar>>,
@@ -741,7 +787,7 @@ pub(crate) fn update_healthbar(
 }
 
 /// Ticks abilities currently on cooldown.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 pub(crate) fn tick_cooldowns(
 	turn: Query<'_, '_, &Turn>,
 	abilities: Res<'_, Abilities>,
@@ -761,7 +807,7 @@ pub(crate) fn tick_cooldowns(
 }
 
 /// Ticks status effects currently on cooldown.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 pub(crate) fn tick_status_effects(
 	turn: Query<'_, '_, &Turn, Changed<Turn>>,
 	mut status_effects: Query<'_, '_, (&mut CurrentStatusEffects, &mut Health)>,
@@ -769,7 +815,7 @@ pub(crate) fn tick_status_effects(
 	if let Ok(turn) = turn.get_single() {
 		for (mut effects, mut health) in &mut status_effects {
 			for effect in &effects.0 {
-				#[allow(
+				#[expect(
 					clippy::as_conversions,
 					clippy::cast_possible_truncation,
 					clippy::cast_sign_loss
@@ -787,7 +833,7 @@ pub(crate) fn tick_status_effects(
 }
 
 /// Handle when a death event was sent.
-#[allow(
+#[expect(
 	clippy::needless_pass_by_value,
 	clippy::too_many_arguments,
 	clippy::too_many_lines,
@@ -809,7 +855,7 @@ pub(crate) fn death(
 			&mut TextureAtlas,
 			&mut Animation,
 			&mut Drops,
-			Has<Enemy>,
+			Option<&Enemy>,
 			Has<Player>,
 		),
 	>,
@@ -841,9 +887,9 @@ pub(crate) fn death(
 			player,
 		) = animations.get_mut(event.0).unwrap();
 
-		let death_animation = if enemy {
+		let death_animation = if let Some(enemy) = enemy {
 			game_state.enemies.retain(|(enemy, _)| *enemy != entity);
-			EnemyBundle::death_animation()
+			enemy.death_animation()
 		} else if player {
 			unimplemented!()
 		} else {
@@ -874,7 +920,7 @@ pub(crate) fn death(
 						continue;
 					}
 
-					#[allow(clippy::shadow_same)]
+					#[expect(clippy::shadow_same)]
 					let mut grid_coords = *grid_coords;
 
 					if level_cache.keys.get(&grid_coords).is_some() {

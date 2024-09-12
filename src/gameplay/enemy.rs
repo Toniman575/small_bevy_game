@@ -10,24 +10,94 @@ use bevy_ecs_ldtk::utils;
 use bevy_ecs_tilemap::map::TilemapSize;
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
-use pathfinding::prelude::astar;
+use line_drawing::WalkGrid;
+use pathfinding::prelude::*;
 
 use super::{
-	AbilityEvent, AbilityEventTarget, CurrentStatusEffects, Health, Memory, Player, Spellbook,
-	Vision,
+	Abilities, AbilityEvent, AbilityEventTarget, CurrentStatusEffects, Health, Memory, Player,
+	Spellbook, Vision,
 };
 use crate::animation::Animation;
-use crate::util::{self, flip_sprite, OrderedNeighbors};
-use crate::{Destination, Drops, GameState, LevelCache, TurnState, GRID_SIZE};
+use crate::util::{self, OrderedNeighbors, flip_sprite};
+use crate::{Destination, Drops, GRID_SIZE, GameState, LevelCache, TurnState};
 
 /// Enemy marker component.
-#[derive(Default, Component)]
-pub(crate) struct Enemy;
+#[derive(Clone, Component, Copy, PartialEq, Eq)]
+pub(crate) enum Enemy {
+	/// Basic Skeleton.
+	BaseSkeleton,
+	/// Skeleton caster.
+	MageSkeleton,
+}
+
+impl Enemy {
+	/// Return idle [`Animation`].
+	pub(crate) fn idle_animation(self) -> Animation {
+		match self {
+			Self::BaseSkeleton | Self::MageSkeleton => Animation {
+				timer:     Timer::from_seconds(0.25, TimerMode::Repeating),
+				first:     0,
+				last:      3,
+				repeating: true,
+				anchor:    None,
+			},
+		}
+	}
+
+	/// Return walking [`Animation`].
+	pub(crate) fn walking_animation(self) -> Animation {
+		match self {
+			Self::BaseSkeleton => Animation {
+				timer:     Timer::from_seconds(0.1, TimerMode::Repeating),
+				first:     8,
+				last:      13,
+				repeating: true,
+				anchor:    None,
+			},
+			Self::MageSkeleton => Animation {
+				timer:     Timer::from_seconds(0.1, TimerMode::Repeating),
+				first:     6,
+				last:      11,
+				repeating: true,
+				anchor:    Some(Anchor::Custom(Vec2::new(
+					0.,
+					-(1. / 33. * ((33. - 32.) / 2.)),
+				))),
+			},
+		}
+	}
+
+	/// Return death [`Animation`].
+	pub(crate) fn death_animation(self) -> Animation {
+		match self {
+			Self::BaseSkeleton => Animation {
+				timer:     Timer::from_seconds(0.125, TimerMode::Repeating),
+				first:     16,
+				last:      23,
+				repeating: false,
+				anchor:    Some(Anchor::Custom(Vec2::new(
+					0.,
+					-(1. / 48. * ((48. - 32.) / 2.)),
+				))),
+			},
+			Self::MageSkeleton => Animation {
+				timer:     Timer::from_seconds(0.125, TimerMode::Repeating),
+				first:     12,
+				last:      17,
+				repeating: false,
+				anchor:    Some(Anchor::Custom(Vec2::new(
+					0.,
+					-(1. / 56. * ((56. - 32.) / 2.)),
+				))),
+			},
+		}
+	}
+}
 
 /// Enemy bundle.
 #[derive(Bundle, LdtkEntity)]
-pub(crate) struct EnemyBundle {
-	/// enemy marker component.
+pub(crate) struct BaseSkeletonBundle {
+	/// Enemy marker component.
 	enemy:               Enemy,
 	/// Health of the enemy.
 	#[from_entity_instance]
@@ -51,62 +121,67 @@ pub(crate) struct EnemyBundle {
 	effects:             CurrentStatusEffects,
 }
 
-impl Default for EnemyBundle {
+impl Default for BaseSkeletonBundle {
 	fn default() -> Self {
 		Self {
-			enemy:               Enemy,
+			enemy:               Enemy::BaseSkeleton,
 			health:              Health::default(),
-			abilities:           Spellbook::default_enemy(),
+			abilities:           Spellbook::base_skeleton(),
 			drops:               Drops::default(),
 			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
-			animation:           Self::idle_animation(),
+			animation:           Enemy::BaseSkeleton.idle_animation(),
 			vision:              Vision::new(4),
 			effects:             CurrentStatusEffects::default(),
 		}
 	}
 }
 
-impl EnemyBundle {
-	/// Return idle [`Animation`].
-	pub(crate) fn idle_animation() -> Animation {
-		Animation {
-			timer:     Timer::from_seconds(0.25, TimerMode::Repeating),
-			first:     0,
-			last:      3,
-			repeating: true,
-			anchor:    None,
-		}
-	}
+/// Enemy bundle.
+#[derive(Bundle, LdtkEntity)]
+pub(crate) struct MageSkeletonBundle {
+	/// Enemy marker component.
+	enemy:               Enemy,
+	/// Health of the enemy.
+	#[from_entity_instance]
+	health:              Health,
+	/// Abilities the enemy can perform.
+	abilities:           Spellbook,
+	#[from_entity_instance]
+	/// A list of items this enemy drops on death.
+	drops:               Drops,
+	/// Sprite bundle.
+	#[sprite_sheet_bundle]
+	sprite_sheet_bundle: LdtkSpriteSheetBundle,
+	/// enemy grid coordinates.
+	#[grid_coords]
+	grid_coords:         GridCoords,
+	/// Animation.
+	animation:           Animation,
+	/// Which tiles the enemy can see.
+	vision:              Vision,
+	/// Active [`StatusEffects`].
+	effects:             CurrentStatusEffects,
+}
 
-	/// Return walking [`Animation`].
-	pub(crate) fn walking_animation() -> Animation {
-		Animation {
-			timer:     Timer::from_seconds(0.1, TimerMode::Repeating),
-			first:     9,
-			last:      14,
-			repeating: true,
-			anchor:    None,
-		}
-	}
-
-	/// Return death [`Animation`].
-	pub(crate) fn death_animation() -> Animation {
-		Animation {
-			timer:     Timer::from_seconds(0.125, TimerMode::Repeating),
-			first:     16,
-			last:      23,
-			repeating: false,
-			anchor:    Some(Anchor::Custom(Vec2::new(
-				0.,
-				-(1. / 48. * ((48. - 32.) / 2.)),
-			))),
+impl Default for MageSkeletonBundle {
+	fn default() -> Self {
+		Self {
+			enemy:               Enemy::MageSkeleton,
+			health:              Health::default(),
+			abilities:           Spellbook::mage_skeleton(),
+			drops:               Drops::default(),
+			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
+			grid_coords:         GridCoords::default(),
+			animation:           Enemy::MageSkeleton.idle_animation(),
+			vision:              Vision::new(4),
+			effects:             CurrentStatusEffects::default(),
 		}
 	}
 }
 
 /// Moves enemies when its their turn.
-#[allow(
+#[expect(
 	clippy::needless_pass_by_value,
 	clippy::type_complexity,
 	clippy::too_many_arguments,
@@ -114,6 +189,7 @@ impl EnemyBundle {
 )]
 pub(crate) fn move_enemies(
 	mut commands: Commands<'_, '_>,
+	abilities: Res<'_, Abilities>,
 	mut game_state: ResMut<'_, GameState>,
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut turn_state: ResMut<'_, TurnState>,
@@ -124,6 +200,7 @@ pub(crate) fn move_enemies(
 		'_,
 		(
 			Entity,
+			&Enemy,
 			&GridCoords,
 			&Transform,
 			&mut Sprite,
@@ -133,7 +210,7 @@ pub(crate) fn move_enemies(
 			&mut Visibility,
 			&mut Vision,
 		),
-		(With<Enemy>, Without<Player>),
+		Without<Player>,
 	>,
 	mut cast_ability: EventWriter<'_, AbilityEvent>,
 ) {
@@ -146,10 +223,11 @@ pub(crate) fn move_enemies(
 		let (player_entity, player_pos, player_vision) = player.single();
 		let (
 			enemy_entity,
+			enemy_type,
 			enemy_pos,
 			enemy_transform,
 			mut enemy_sprite,
-			spellbook,
+			enemy_spellbook,
 			mut enemy_atlas,
 			mut enemy_animation,
 			mut enemy_visibility,
@@ -160,13 +238,10 @@ pub(crate) fn move_enemies(
 
 		let old_player_pos = if enemy_vision.tiles.contains(player_pos) {
 			// If we see the player, update player position.
-			enemy_vision.memory.insert(
-				player_entity,
-				Memory {
-					coords:    *player_pos,
-					last_seen: None,
-				},
-			);
+			enemy_vision.memory.insert(player_entity, Memory {
+				coords:    *player_pos,
+				last_seen: None,
+			});
 			player_pos
 		} else if let Some(old_player_pos) = enemy_vision.memory.get(&player_entity) {
 			// If we reached the memorized player position but the player wasn't here, delete the
@@ -183,76 +258,212 @@ pub(crate) fn move_enemies(
 
 		flip_sprite(*enemy_pos, *old_player_pos, &mut enemy_sprite);
 
-		let path = if let Some((path, _)) = astar(
-			enemy_pos,
-			|grid_pos| {
-				OrderedNeighbors::new((*grid_pos).into(), *tile_map_size)
-					.filter_map(|pos| {
-						let walkable = level_cache.destination(doors, *enemy_pos, pos.into());
-						matches!(walkable, Destination::Walkable).then_some((pos.into(), 1))
-					})
-					.collect::<Vec<_>>()
-			},
-			|start| util::euclidean_distance(*old_player_pos, *start),
-			|current_pos| current_pos == old_player_pos,
-		) {
-			path
-		} else if let Some((path, _)) = astar(
-			enemy_pos,
-			|grid_pos| {
-				OrderedNeighbors::new((*grid_pos).into(), *tile_map_size)
-					.filter_map(|pos| {
-						let walkable = level_cache.destination(doors, *enemy_pos, pos.into());
-						matches!(walkable, Destination::Walkable | Destination::Enemy)
-							.then_some((pos.into(), 1))
-					})
-					.collect::<Vec<_>>()
-			},
-			|start| util::euclidean_distance(*old_player_pos, *start),
-			|current_pos| current_pos == old_player_pos,
-		) {
-			path
-		} else {
-			continue;
+		let path = match enemy_type {
+			Enemy::BaseSkeleton => {
+				if let Some((path, _)) = astar(
+					enemy_pos,
+					|grid_pos| {
+						OrderedNeighbors::new((*grid_pos).into(), *tile_map_size)
+							.filter_map(|pos| {
+								let walkable =
+									level_cache.destination(doors, *enemy_pos, pos.into());
+								matches!(walkable, Destination::Walkable).then_some((pos.into(), 1))
+							})
+							.collect::<Vec<_>>()
+					},
+					|start| util::euclidean_distance(*old_player_pos, *start),
+					|current_pos| current_pos == old_player_pos,
+				) {
+					path
+				} else if let Some((path, _)) = astar(
+					enemy_pos,
+					|grid_pos| {
+						OrderedNeighbors::new((*grid_pos).into(), *tile_map_size)
+							.filter_map(|pos| {
+								let walkable =
+									level_cache.destination(doors, *enemy_pos, pos.into());
+								matches!(walkable, Destination::Walkable | Destination::Enemy)
+									.then_some((pos.into(), 1))
+							})
+							.collect::<Vec<_>>()
+					},
+					|start| util::euclidean_distance(*old_player_pos, *start),
+					|current_pos| current_pos == old_player_pos,
+				) {
+					path
+				} else {
+					continue;
+				}
+			}
+			Enemy::MageSkeleton => {
+				let ability_id = enemy_spellbook.autoattack_ranged.expect(
+					"mage skeleton has to have a ranged autoattack
+				",
+				);
+
+				let distance = util::euclidean_distance(*player_pos, *enemy_pos);
+
+				#[expect(clippy::as_conversions, clippy::cast_lossless)]
+				let in_range = distance
+					- abilities
+						.0
+						.get(&ability_id)
+						.expect("abilityid has to exist")
+						.range as i32;
+
+				let on_cooldown = enemy_spellbook
+					.abilities
+					.get(&ability_id)
+					.expect("abilityid has to exist")
+					.last_cast
+					.is_some();
+
+				// if spell is off cooldown and we are in range...
+				if !on_cooldown && in_range <= 0 {
+					cast_ability.send(AbilityEvent::new(
+						enemy_entity,
+						ability_id,
+						AbilityEventTarget::Entity(player_entity),
+					));
+					return;
+				}
+
+				// if we are JUST in range...
+				if in_range == 0 {
+					return;
+
+				// if we are closer than than we need to be ...
+				} else if in_range < 0 {
+					let possible_moves = [
+						(0, -1),  // Up
+						(0, 1),   // Down
+						(-1, 0),  // Left
+						(1, 0),   // Right
+						(-1, -1), // Up-Left (Diagonal)
+						(1, -1),  // Up-Right (Diagonal)
+						(-1, 1),  // Down-Left (Diagonal)
+						(1, 1),   // Down-Right (Diagonal)
+					];
+
+					let mut best_move = *enemy_pos;
+					let mut max_distance = 0;
+
+					for mv in possible_moves {
+						let new_pos = GridCoords::new(enemy_pos.x + mv.0, enemy_pos.y + mv.1);
+
+						// Ensure the move stays within the grid boundaries
+						if let Destination::Walkable =
+							level_cache.destination(doors, *enemy_pos, new_pos)
+						{
+							// Calculate the distance from the player to the new position
+							let dist = util::euclidean_distance(new_pos, *player_pos);
+
+							// If this move increases the distance from the player, it's a better
+							// move
+							if dist > max_distance {
+								max_distance = dist;
+								best_move = new_pos;
+							}
+						}
+					}
+
+					vec![*enemy_pos, best_move]
+				}
+				// If we are not in range
+				else if let Some((path, _)) = astar(
+					enemy_pos,
+					|grid_pos| {
+						OrderedNeighbors::new((*grid_pos).into(), *tile_map_size)
+							.filter_map(|pos| {
+								let walkable =
+									level_cache.destination(doors, *enemy_pos, pos.into());
+								matches!(walkable, Destination::Walkable).then_some((pos.into(), 1))
+							})
+							.collect::<Vec<_>>()
+					},
+					|start| util::euclidean_distance(*old_player_pos, *start),
+					|current_pos| current_pos == old_player_pos,
+				) {
+					path
+				} else {
+					continue;
+				}
+			}
 		};
 
-		let destination = path.get(1).expect("found empty path");
+		let mut destination = *path.get(1).expect("found empty path");
 
-		let (ability_id, _) = spellbook
-			.abilities
-			.get_key_value(&spellbook.autoattack_melee)
-			.expect("there has to be a melee autoattack");
+		if let Enemy::BaseSkeleton = enemy_type {
+			let (ability_id, _) = enemy_spellbook
+				.abilities
+				.get_key_value(
+					&enemy_spellbook
+						.autoattack_melee
+						.expect("a melee enemy has to have a melee autoattack"),
+				)
+				.expect("there has to be a melee autoattack");
 
-		if old_player_pos == player_pos {
-			if destination == player_pos {
-				cast_ability.send(AbilityEvent::new(
-					enemy_entity,
-					*ability_id,
-					AbilityEventTarget::Entity(player_entity),
-				));
-				return;
-			}
-
-			if level_cache.enemies.contains_key(destination) {
-				if let Some((ability_id, _)) = spellbook
-					.abilities
-					.get_key_value(&spellbook.autoattack_ranged)
-				{
+			if old_player_pos == player_pos {
+				if destination == *player_pos {
 					cast_ability.send(AbilityEvent::new(
 						enemy_entity,
 						*ability_id,
 						AbilityEventTarget::Entity(player_entity),
 					));
+					return;
 				}
-				return;
+
+				let path = WalkGrid::new(
+					IVec2::from(*enemy_pos).into(),
+					IVec2::from(*player_pos).into(),
+				)
+				.steps()
+				.map(|(start, end)| {
+					(
+						GridCoords::from(IVec2::from(start)),
+						GridCoords::from(IVec2::from(end)),
+					)
+				});
+
+				let mut charge = true;
+
+				for (start, end) in path.skip(1) {
+					if level_cache.walls.contains(&start)
+						|| level_cache.enemies.contains_key(&start)
+					{
+						charge = false;
+						break;
+					}
+
+					// reached last one
+					if end == *player_pos {
+						destination = start;
+						continue;
+					}
+				}
+
+				if !charge && level_cache.enemies.contains_key(&destination) {
+					if let Some(autoattack_ranged) = &enemy_spellbook.autoattack_ranged {
+						if let Some((ability_id, _)) =
+							enemy_spellbook.abilities.get_key_value(autoattack_ranged)
+						{
+							cast_ability.send(AbilityEvent::new(
+								enemy_entity,
+								*ability_id,
+								AbilityEventTarget::Entity(player_entity),
+							));
+						}
+						return;
+					}
+				}
 			}
 		}
 
-		if level_cache.enemies.contains_key(destination) {
+		if level_cache.enemies.contains_key(&destination) {
 			continue;
 		}
 
-		if player_vision.tiles.contains(destination) {
+		if player_vision.tiles.contains(&destination) {
 			enemy_visibility.set_if_neq(Visibility::Inherited);
 		}
 
@@ -264,14 +475,14 @@ pub(crate) fn move_enemies(
 				Duration::from_millis(250),
 				TransformPositionLens {
 					start: enemy_transform.translation,
-					end:   utils::grid_coords_to_translation(*destination, IVec2::splat(GRID_SIZE))
+					end:   utils::grid_coords_to_translation(destination, IVec2::splat(GRID_SIZE))
 						.extend(enemy_transform.translation.z),
 				},
 			)
 			.with_completed_event(0),
 		));
 
-		*enemy_animation = EnemyBundle::walking_animation();
+		*enemy_animation = enemy_type.walking_animation();
 		enemy_atlas.index = enemy_animation.first;
 
 		let enemy = level_cache
@@ -283,7 +494,7 @@ pub(crate) fn move_enemies(
 			"wrong enemy found in level cache: searching for {:?} in {:?}",
 			enemy_pos, level_cache.enemies
 		);
-		level_cache.enemies.insert(*destination, enemy);
+		level_cache.enemies.insert(destination, enemy);
 
 		*turn_state = TurnState::EnemiesBusy;
 		return;

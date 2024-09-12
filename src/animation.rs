@@ -6,7 +6,7 @@ use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
 use bevy_tweening::{Animator, TweenCompleted};
 
-use crate::gameplay::{Enemy, EnemyBundle, Player, PlayerBundle, Vision};
+use crate::gameplay::{Enemy, Player, PlayerBundle, Vision};
 use crate::{GameState, LevelCache, TurnState, GRID_SIZE};
 
 /// Animated sprite.
@@ -29,7 +29,7 @@ pub(crate) struct Animation {
 pub(crate) struct AnimationAbility;
 
 /// Animate entities.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 pub(crate) fn animate(
 	mut commands: Commands<'_, '_>,
 	time: Res<'_, Time>,
@@ -75,7 +75,7 @@ pub(crate) fn animate(
 }
 
 /// Remove [`Animator`] after completion and potentially transition to old animation.
-#[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
+#[expect(clippy::needless_pass_by_value, clippy::type_complexity)]
 pub(crate) fn finish_animation(
 	mut commands: Commands<'_, '_>,
 	mut turn_state: ResMut<'_, TurnState>,
@@ -92,7 +92,7 @@ pub(crate) fn finish_animation(
 			Option<&mut Animation>,
 			&mut Visibility,
 			Has<Player>,
-			Has<Enemy>,
+			Option<&Enemy>,
 			Has<AnimationAbility>,
 		),
 	>,
@@ -110,7 +110,7 @@ pub(crate) fn finish_animation(
 			animation,
 			mut visibility,
 			has_player,
-			has_enemy,
+			enemy_type,
 			is_ability_animation,
 		) = query.get_mut(completed.entity).unwrap();
 
@@ -131,8 +131,8 @@ pub(crate) fn finish_animation(
 		// Transition back to idle animation.
 		if has_player {
 			*animation = PlayerBundle::idle_animation();
-		} else if has_enemy {
-			*animation = EnemyBundle::idle_animation();
+		} else if let Some(enemy_type) = enemy_type {
+			*animation = enemy_type.idle_animation();
 		} else {
 			unreachable!("found unknown entity");
 		}
@@ -143,7 +143,7 @@ pub(crate) fn finish_animation(
 			.remove::<Animator<Transform>>();
 
 		// Hide enemy if it makes sense.
-		if has_enemy
+		if enemy_type.is_some()
 			&& !player_vision.tiles.contains(&grid_coord)
 			&& !player_vision.memory.contains_key(&entity)
 		{
@@ -159,7 +159,7 @@ pub(crate) fn finish_animation(
 pub(crate) struct ArrivedAtTile;
 
 /// Run when an entity has arrived at a tile.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 pub(crate) fn arrived_at_tile(
 	trigger: Trigger<'_, ArrivedAtTile>,
 	mut commands: Commands<'_, '_>,

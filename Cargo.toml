@@ -6,19 +6,19 @@ version = "0.0.0"
 
 [dependencies]
 bevy = { version = "0.14", features = ["webp"] }
-bevy-inspector-egui = "0.25"
+bevy-inspector-egui = "0.26"
 bevy_ecs_ldtk = "0.10"
 bevy_ecs_tilemap = { version = "0.14", default-features = false }
-bevy_egui = "0.28"
-bevy_pancam = { version = "0.13", features = ["bevy_egui"] }
+bevy_egui = "0.29"
+bevy_pancam = { version = "0.14", features = ["bevy_egui"] }
 bevy_tweening = "0.11"
+line_drawing = "1"
 num-traits = "0.2"
 pathfinding = "4"
 symmetric-shadowcasting = "0.2"
 
 [patch.crates-io]
 bevy_input = { git = "https://github.com/daxpedda/bevy", branch = "small-bevy-game" }
-bevy_pancam = { git = "https://github.com/johanhelsing/bevy_pancam", rev = "ec828f4a5ba5131c209936d8463ba071bcf365c5" }
 bevy_winit = { git = "https://github.com/daxpedda/bevy", branch = "small-bevy-game" }
 
 [features]
@@ -99,6 +99,7 @@ exhaustive_enums = "allow"
 exhaustive_structs = "allow"
 expect_used = "allow"
 explicit_deref_methods = "allow"
+field_scoped_visibility_modifiers = "allow"
 float_arithmetic = "allow"
 future_not_send = "allow"
 implicit_return = "allow"

@@ -24,6 +24,7 @@
 //! - Fully loaded levels, before cleanup, can sometimes be seen for a single frame.
 
 #![allow(
+	clippy::allow_attributes_without_reason,
 	clippy::multiple_crate_versions,
 	clippy::unimplemented,
 	clippy::wildcard_imports
@@ -38,8 +39,8 @@ use std::mem;
 use std::ops::{Deref, DerefMut};
 
 use bevy::color::palettes::basic::*;
-use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
+use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::{AssetServer, *};
 use bevy::utils::{Entry, HashMap, HashSet};
 use bevy::window::PrimaryWindow;
@@ -47,7 +48,7 @@ use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
 use bevy_ecs_tilemap::prelude::*;
 use bevy_egui::egui::{Margin, TextWrapMode, TextureId, TopBottomPanel};
-use bevy_egui::{egui, EguiPlugin, EguiSet};
+use bevy_egui::{EguiPlugin, EguiSet, egui};
 use bevy_inspector_egui::bevy_egui::EguiContexts;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_pancam::{DirectionKeys, PanCam, PanCamPlugin};
@@ -56,14 +57,15 @@ use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
 	SidePanel, Stroke, Widget,
 };
-use fow::update_memory;
-use gameplay::{tick_status_effects, Abilities, CurrentStatusEffects, EffectType, StatusEffect};
+use line_drawing::WalkGrid;
 
-use self::fow::{generate_fov, ApplyFoW};
+use self::fow::{ApplyFoW, generate_fov, update_memory};
 use self::gameplay::{
-	cast_ability, death, door_interactions, handle_ability_event, move_enemies, player_movement,
-	select_ability, spawn_healthbar, tick_cooldowns, update_healthbar, AbilityEffect, AbilityEvent,
-	ActiveAbility, DeathEvent, Enemy, EnemyBundle, Health, Player, PlayerBundle, Spellbook, Vision,
+	Abilities, AbilityEffect, AbilityEvent, ActiveAbility, BaseSkeletonBundle,
+	CurrentStatusEffects, DeathEvent, EffectType, Enemy, Health, MageSkeletonBundle, Player,
+	PlayerBundle, Spellbook, StatusEffect, Vision, cast_ability, death, door_interactions,
+	handle_ability_event, move_enemies, player_movement, select_ability, spawn_healthbar,
+	tick_cooldowns, tick_status_effects, update_healthbar,
 };
 
 /// The size of the Grid in pixels.
@@ -88,7 +90,11 @@ enum TurnState {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Resource, Reflect)]
 enum PlayerBusy {
 	/// Player is attacking.
-	Casting,
+	Casting {
+		/// If the camera updates with the current casting animation.
+		// FP: https://github.com/rust-lang/rust-clippy/issues/13058
+		camera: bool,
+	},
 	/// Player is moving.
 	Moving,
 }
@@ -114,7 +120,6 @@ struct KeyBundle {
 #[derive(Clone, Component, Debug, Default, Reflect, PartialEq, Eq)]
 struct Drops(Vec<String>);
 
-#[allow(clippy::fallible_impl_from)]
 impl From<&EntityInstance> for Drops {
 	fn from(entity_instance: &EntityInstance) -> Self {
 		let reference = entity_instance
@@ -156,6 +161,7 @@ pub struct CursorPos {
 struct Wall;
 
 /// Wall bundle.
+// FP: https://github.com/rust-lang/rust-clippy/issues/12996
 #[derive(Default, Bundle, LdtkIntCell)]
 struct WallBundle {
 	/// Wall marker component.
@@ -280,7 +286,7 @@ enum Destination {
 }
 
 /// Startup system.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn startup(
 	mut commands: Commands<'_, '_>,
 	asset_server: Res<'_, AssetServer>,
@@ -327,21 +333,27 @@ fn startup(
 	let props = asset_server.load("Environment/Dungeon Prison/Assets/Props.png");
 	let props_id = contexts.add_image(props.clone_weak());
 	let arrow = asset_server.load::<Image>("arrow.webp");
-	let slash = asset_server.load::<Image>("slash.webp");
-	let slash_atlas = asset_server.add(TextureAtlasLayout::from_grid(
+	let slash_animation = asset_server.load::<Image>("slash.webp");
+	let slash_animation_atlas = asset_server.add(TextureAtlasLayout::from_grid(
 		UVec2::splat(64),
 		7,
 		1,
 		None,
 		None,
 	));
+	let auto_attack_icon = asset_server.load("auto_attack.webp");
+	let auto_attack_icon_id = contexts.add_image(auto_attack_icon);
+	let arrow_icon = asset_server.load("arrow_icon.webp");
+	let arrow_icon_id = contexts.add_image(arrow_icon);
 
 	let textures = Textures {
 		props,
 		props_id,
 		arrow,
-		slash,
-		slash_atlas,
+		slash_animation,
+		slash_animation_atlas,
+		auto_attack_icon_id,
+		arrow_icon_id,
 	};
 
 	commands.insert_resource(Abilities::new(&textures));
@@ -352,19 +364,32 @@ fn startup(
 #[derive(Resource)]
 struct Textures {
 	/// Dungeon tileset props.
-	props:       Handle<Image>,
+	props:                 Handle<Image>,
 	/// EGUI texture handle to the dungeon tileset props.
-	props_id:    TextureId,
+	props_id:              TextureId,
 	/// Arrow texture.
-	arrow:       Handle<Image>,
-	/// Slash attack texture.
-	slash:       Handle<Image>,
-	/// Slash texture atlas layout.
-	slash_atlas: Handle<TextureAtlasLayout>,
+	arrow:                 Handle<Image>,
+	/// Slash animation attack texture.
+	slash_animation:       Handle<Image>,
+	/// Slash animation texture atlas layout.
+	slash_animation_atlas: Handle<TextureAtlasLayout>,
+	/// EGUI texture handle to the auto-attack icon.
+	auto_attack_icon_id:   TextureId,
+	/// EGUI texture handle to the arrow icon.
+	arrow_icon_id:         TextureId,
+}
+
+/// Icons stored as textures.
+#[derive(Clone, Copy, Reflect)]
+enum TextureIcon {
+	/// Auto-attack ability icon.
+	AutoAttack,
+	/// Arrow ability icon.
+	Arrow,
 }
 
 /// Initialize states after level is spawned.
-#[allow(
+#[expect(
 	clippy::needless_pass_by_value,
 	clippy::too_many_arguments,
 	clippy::type_complexity
@@ -494,25 +519,51 @@ fn level_spawn(
 }
 
 /// Every time enemies are added we need to customize their [`TextureAtlasLayout`].
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn fix_sprite_layout(
 	mut texture_atlas_layouts: ResMut<'_, Assets<TextureAtlasLayout>>,
-	enemies: Query<'_, '_, &TextureAtlas, Added<Enemy>>,
+	enemies: Query<'_, '_, (&Enemy, &TextureAtlas), Added<Enemy>>,
 ) {
-	for enemy in enemies.iter() {
+	for (enemy, atlas) in enemies.iter() {
 		let layout = texture_atlas_layouts
-			.get_mut(&enemy.layout)
+			.get_mut(&atlas.layout)
 			.expect("texture atlas layout not found for enemy");
-		for texture in layout
-			.textures
-			.get_mut(16..=23)
-			.expect("unexpected enemy skeleton sprite sheet size")
-			.iter_mut()
-		{
-			texture.max.y = 112;
-		}
 
-		layout.textures.truncate(24);
+		match enemy {
+			Enemy::BaseSkeleton => {
+				for texture in layout
+					.textures
+					.get_mut(16..=23)
+					.expect("unexpected enemy skeleton sprite sheet size")
+					.iter_mut()
+				{
+					texture.max.y = 112;
+				}
+
+				layout.textures.truncate(24);
+			}
+			Enemy::MageSkeleton => {
+				for texture in layout
+					.textures
+					.get_mut(6..=11)
+					.expect("unexpected enemy skeleton sprite sheet size")
+					.iter_mut()
+				{
+					texture.max.y = 65;
+				}
+
+				for texture in layout
+					.textures
+					.get_mut(12..=17)
+					.expect("unexpected enemy skeleton sprite sheet size")
+					.iter_mut()
+				{
+					texture.max.y = 121;
+				}
+
+				layout.textures.truncate(18);
+			}
+		}
 	}
 }
 
@@ -521,7 +572,7 @@ fn fix_sprite_layout(
 struct DoorOpen;
 
 /// Opens a door when triggered.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn door_trigger(
 	trigger: Trigger<'_, DoorOpen>,
 	mut doors: Query<'_, '_, &mut TextureAtlas, With<Door>>,
@@ -566,7 +617,6 @@ enum Debug {
 }
 
 /// Enables/Disables debug mode.
-#[allow(clippy::needless_pass_by_value)]
 fn debug(
 	mut commands: Commands<'_, '_>,
 	mut context: EguiContexts<'_, '_>,
@@ -623,7 +673,7 @@ fn debug(
 }
 
 /// We need to keep the cursor position updated based on any `CursorMoved` events.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn update_cursor_pos(
 	camera_q: Query<'_, '_, (&GlobalTransform, &Camera)>,
 	q_windows: Query<'_, '_, &Window, With<PrimaryWindow>>,
@@ -649,7 +699,7 @@ fn update_cursor_pos(
 }
 
 /// Updates the `TargetingMarker` with updated `CursorPos`.
-#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+#[expect(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn update_target_marker(
 	cursor_pos: Res<'_, CursorPos>,
 	player: Query<'_, '_, (Entity, &GridCoords, &Health, &ActiveAbility, &Vision), With<Player>>,
@@ -792,18 +842,60 @@ fn update_target_marker(
 					}
 				}
 			},
+			AbilityEffect::Charge(_) => {
+				if let Some(entity) = enemy {
+					let path = WalkGrid::new(
+						IVec2::from(*player_grid_coords).into(),
+						IVec2::from(*marker_grid_coords).into(),
+					)
+					.map(|pos| GridCoords::from(IVec2::from(pos)));
+
+					let mut valid = true;
+
+					for pos in path {
+						// reached last one
+						if pos == *marker_grid_coords {
+							continue;
+						}
+
+						if level_cache.walls.contains(&pos)
+							|| level_cache.enemies.contains_key(&pos)
+						{
+							valid = false;
+							break;
+						}
+					}
+
+					if valid {
+						sprite.color = RED.into();
+					} else {
+						sprite.color = YELLOW.into();
+					};
+
+					marker.set_if_neq(TargetingMarker {
+						entity: Some(*entity),
+						valid,
+					});
+				} else {
+					sprite.color = Color::WHITE;
+					marker.set_if_neq(TargetingMarker {
+						entity: None,
+						valid:  false,
+					});
+				}
+			}
 		}
 	}
 }
 
 /// Updates Camera with player movement.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn camera_update(
 	turn_state: Res<'_, TurnState>,
 	player: Query<'_, '_, &Transform, (With<Player>, Changed<Transform>)>,
 	mut cam: Query<'_, '_, &mut Transform, (With<Camera>, Without<Player>)>,
 ) {
-	if let TurnState::PlayerBusy(PlayerBusy::Casting) = turn_state.deref() {
+	if let TurnState::PlayerBusy(PlayerBusy::Casting { camera: false }) = turn_state.deref() {
 		return;
 	}
 
@@ -816,7 +908,7 @@ fn camera_update(
 }
 
 /// Updates [`Transform`] for [`Entity`]s with changed [`GridCoords`].
-#[allow(clippy::type_complexity)]
+#[expect(clippy::type_complexity)]
 fn translate_grid_coords_entities(
 	mut entities: Query<
 		'_,
@@ -833,7 +925,7 @@ fn translate_grid_coords_entities(
 }
 
 /// Item UI.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn item_ui(
 	textures: Res<'_, Textures>,
 	state: Res<'_, GameState>,
@@ -855,14 +947,12 @@ fn item_ui(
 						.stroke(Stroke::new(2., Color32::WHITE))
 						.rounding(5.)
 						.show(ui, |ui| {
-							let (response, painter) = ui.allocate_painter(
-								egui::Vec2::new(64., 64.),
-								Sense {
+							let (response, painter) =
+								ui.allocate_painter(egui::Vec2::new(64., 64.), Sense {
 									click:     false,
 									drag:      false,
 									focusable: false,
-								},
-							);
+								});
 
 							painter.image(
 								textures.props_id,
@@ -907,7 +997,7 @@ fn item_ui(
 }
 
 /// Turn counter UI.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn turn_ui(turn_q: Query<'_, '_, &Turn>, mut contexts: EguiContexts<'_, '_>) {
 	let Some(context) = contexts.try_ctx_mut() else {
 		return;
@@ -935,8 +1025,9 @@ fn turn_ui(turn_q: Query<'_, '_, &Turn>, mut contexts: EguiContexts<'_, '_>) {
 }
 
 /// Abilities UI.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn ability_ui(
+	textures: Res<'_, Textures>,
 	mut player: Query<'_, '_, (&Spellbook, &mut ActiveAbility), With<Player>>,
 	abilites: Res<'_, Abilities>,
 	mut contexts: EguiContexts<'_, '_>,
@@ -955,7 +1046,7 @@ fn ability_ui(
 		.frame(Frame::none())
 		.show(context, |ui| {
 			ui.horizontal(|ui| {
-				#[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+				#[expect(clippy::as_conversions, clippy::cast_precision_loss)]
 				let range = spellbook.abilities.len() as f32 * 68.;
 				let padding = (context.screen_rect().width() - range) / 2.;
 				ui.add_space(padding);
@@ -975,7 +1066,7 @@ fn ability_ui(
 						Color32::WHITE
 					};
 
-					#[allow(clippy::option_if_let_else)]
+					#[expect(clippy::option_if_let_else)]
 					let (text, text_color) = if let Some(cooldown_left) =
 						spellbook_ability.cooldown_left(ability, turn_q.single().0)
 					{
@@ -990,47 +1081,47 @@ fn ability_ui(
 						.rounding(5.)
 						.outer_margin(Margin::symmetric(2., 2.))
 						.show(ui, |ui| {
-							let (response, painter) = ui.allocate_painter(
-								egui::Vec2::new(64., 64.),
-								Sense {
+							let (response, painter) =
+								ui.allocate_painter(egui::Vec2::new(64., 64.), Sense {
 									click:     false,
 									drag:      false,
 									focusable: false,
-								},
-							);
+								});
 
-							/*painter.image(
-								key_texture,
-								response.rect,
-								egui::Rect::from([
-									Pos2::new(1. / 400. * 32., 1. / 400. * 64.),
-									Pos2::new(1. / 400. * 48., 1. / 400. * 80.),
-								]),
-								Color32::WHITE,
-							);*/
+							if let Some(icon) = ability.icon {
+								painter.image(
+									match icon {
+										TextureIcon::AutoAttack => textures.auto_attack_icon_id,
+										TextureIcon::Arrow => textures.arrow_icon_id,
+									},
+									response.rect,
+									egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.)),
+									Color32::WHITE,
+								);
+							} else {
+								// Text shadow.
+								painter.text(
+									(response.rect.right_top() - Pos2::new(4., -4.)).to_pos2(),
+									Align2::RIGHT_TOP,
+									text,
+									FontId {
+										size: 12.,
+										..FontId::default()
+									},
+									Color32::BLACK,
+								);
 
-							// Text shadow.
-							painter.text(
-								(response.rect.right_top() - Pos2::new(4., -4.)).to_pos2(),
-								Align2::RIGHT_TOP,
-								text,
-								FontId {
-									size: 12.,
-									..FontId::default()
-								},
-								Color32::BLACK,
-							);
-
-							painter.text(
-								(response.rect.right_top() - Pos2::new(2., -2.)).to_pos2(),
-								Align2::RIGHT_TOP,
-								text,
-								FontId {
-									size: 12.,
-									..FontId::default()
-								},
-								text_color,
-							);
+								painter.text(
+									(response.rect.right_top() - Pos2::new(2., -2.)).to_pos2(),
+									Align2::RIGHT_TOP,
+									text,
+									FontId {
+										size: 12.,
+										..FontId::default()
+									},
+									text_color,
+								);
+							}
 
 							// Text shadow.
 							painter.text(
@@ -1069,7 +1160,7 @@ fn ability_ui(
 }
 
 /// Shows the currently active [`StatusEffects`] and how long they will last on the player.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn player_effect_ui(
 	effects: Query<'_, '_, &CurrentStatusEffects, With<Player>>,
 	mut contexts: EguiContexts<'_, '_>,
@@ -1095,14 +1186,12 @@ fn player_effect_ui(
 						.stroke(Stroke::new(2., Color32::WHITE))
 						.rounding(5.)
 						.show(ui, |ui| {
-							let (response, painter) = ui.allocate_painter(
-								egui::Vec2::new(64., 64.),
-								Sense {
+							let (response, painter) =
+								ui.allocate_painter(egui::Vec2::new(64., 64.), Sense {
 									click:     false,
 									drag:      false,
 									focusable: false,
-								},
-							);
+								});
 
 							/*painter.image(
 								textures.props_id,
@@ -1242,7 +1331,8 @@ fn main() {
 		.add_event::<AbilityEvent>()
 		.register_ldtk_entity::<PlayerBundle>("Player")
 		.register_ldtk_entity::<KeyBundle>("Key")
-		.register_ldtk_entity::<EnemyBundle>("Skeleton")
+		.register_ldtk_entity::<BaseSkeletonBundle>("BaseSkeleton")
+		.register_ldtk_entity::<MageSkeletonBundle>("MageSkeleton")
 		.register_ldtk_entity::<DoorBundle>("Door")
 		.register_ldtk_int_cell::<WallBundle>(1)
 		.register_type::<Door>()

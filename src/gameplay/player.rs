@@ -100,7 +100,7 @@ impl PlayerBundle {
 }
 
 /// Player movement.
-#[allow(
+#[expect(
 	clippy::needless_pass_by_value,
 	clippy::too_many_arguments,
 	clippy::type_complexity
@@ -217,7 +217,7 @@ pub(crate) fn player_movement(
 }
 
 /// Opens and closes doors.
-#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+#[expect(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 pub(crate) fn door_interactions(
 	mut commands: Commands<'_, '_>,
 	mut state: ResMut<'_, GameState>,
@@ -274,7 +274,7 @@ pub(crate) fn door_interactions(
 }
 
 /// Lets player cast an ability with a mouseclick.
-#[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
+#[expect(clippy::needless_pass_by_value)]
 pub(crate) fn cast_ability(
 	mut inputs: EventReader<'_, '_, MouseButtonInput>,
 	mut ability_events: EventWriter<'_, AbilityEvent>,
@@ -421,6 +421,11 @@ pub(crate) fn select_ability(
 				}
 				KeyCode::Digit9 => {
 					if let Some(name) = sorted_spellbook_iter.nth(8) {
+						active_ability.0.clone_from(name.0);
+					}
+				}
+				KeyCode::Digit0 => {
+					if let Some(name) = sorted_spellbook_iter.nth(9) {
 						active_ability.0.clone_from(name.0);
 					}
 				}

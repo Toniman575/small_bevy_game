@@ -11,7 +11,7 @@ use crate::gameplay::{Enemy, Player, Vision};
 use crate::{util, Debug, Door, GameState, Key, LevelCache, Turn};
 
 /// Calculates the field of view from an entity with [`Vision`].
-#[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
+#[expect(clippy::needless_pass_by_value)]
 pub(crate) fn generate_fov(
 	mut commands: Commands<'_, '_>,
 	mut origin_q: Query<'_, '_, (&mut Vision, &GridCoords, Has<Player>), Changed<GridCoords>>,
@@ -23,10 +23,10 @@ pub(crate) fn generate_fov(
 		let mut visible_tiles = vec![*origin];
 
 		symmetric_shadowcasting::compute_fov(
-			#[allow(clippy::as_conversions)]
+			#[expect(clippy::as_conversions)]
 			(origin.x as isize, origin.y as isize),
 			&mut |pos| {
-				#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+				#[expect(clippy::as_conversions, clippy::cast_possible_truncation)]
 				let (x, y) = (pos.0 as i32, pos.1 as i32);
 
 				level_cache.walls.contains(&GridCoords::new(x, y))
@@ -34,7 +34,7 @@ pub(crate) fn generate_fov(
 						.unwrap() > vision.range.into()
 			},
 			&mut |pos| {
-				#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+				#[expect(clippy::as_conversions, clippy::cast_possible_truncation)]
 				let (x, y) = (pos.0 as i32, pos.1 as i32);
 
 				if !visible_tiles.contains(&GridCoords::new(x, y)) {
@@ -66,7 +66,7 @@ pub(crate) fn generate_fov(
 pub(crate) struct ApplyFoW;
 
 /// Applies FoW for the player;
-#[allow(
+#[expect(
 	clippy::needless_pass_by_value,
 	clippy::too_many_arguments,
 	clippy::type_complexity
@@ -165,7 +165,7 @@ pub(crate) fn apply_fow(
 }
 
 /// Update player vision memory.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 pub(crate) fn update_memory(
 	mut commands: Commands<'_, '_>,
 	mut vision_query: Query<'_, '_, &mut Vision, With<Player>>,
