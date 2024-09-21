@@ -171,9 +171,14 @@ pub(crate) fn arrived_at_tile(
 
 	// Pick up items if it makes sense.
 	if has_player {
-		if let Some((entity, source)) = level_cache.keys.remove(grid_coord) {
-			*state.keys.get_mut(&source).unwrap() = true;
-			state.player_keys += 1;
+		if let Some((entity, object, source)) = level_cache.objects.remove(grid_coord) {
+			state
+				.objects
+				.get_mut(&source)
+				.unwrap()
+				.entry(object)
+				.insert(true);
+			*state.player_items.entry(object).or_insert(0) += 1;
 			commands.entity(entity).insert(Visibility::Hidden);
 		}
 	}

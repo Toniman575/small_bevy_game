@@ -5,9 +5,11 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
+use bevy::utils::HashSet;
 use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
 use bevy_ecs_tilemap::map::TilemapSize;
+use bevy_ecs_tilemap::tiles::TilePos;
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
 use line_drawing::WalkGrid;
@@ -18,8 +20,8 @@ use super::{
 	Spellbook, Vision,
 };
 use crate::animation::Animation;
-use crate::util::{self, OrderedNeighbors, flip_sprite};
-use crate::{Destination, Drops, GRID_SIZE, GameState, LevelCache, TurnState};
+use crate::util::{self, flip_sprite, OrderedNeighbors};
+use crate::{Destination, Drops, GameState, LevelCache, TurnState, GRID_SIZE};
 
 /// Enemy marker component.
 #[derive(Clone, Component, Copy, PartialEq, Eq)]
@@ -182,6 +184,7 @@ impl Default for MageSkeletonBundle {
 
 /// Moves enemies when its their turn.
 #[expect(
+	clippy::cognitive_complexity,
 	clippy::needless_pass_by_value,
 	clippy::type_complexity,
 	clippy::too_many_arguments,
@@ -238,10 +241,13 @@ pub(crate) fn move_enemies(
 
 		let old_player_pos = if enemy_vision.tiles.contains(player_pos) {
 			// If we see the player, update player position.
-			enemy_vision.memory.insert(player_entity, Memory {
-				coords:    *player_pos,
-				last_seen: None,
-			});
+			enemy_vision.memory.insert(
+				player_entity,
+				Memory {
+					coords:    *player_pos,
+					last_seen: None,
+				},
+			);
 			player_pos
 		} else if let Some(old_player_pos) = enemy_vision.memory.get(&player_entity) {
 			// If we reached the memorized player position but the player wasn't here, delete the
@@ -326,6 +332,75 @@ pub(crate) fn move_enemies(
 						AbilityEventTarget::Entity(player_entity),
 					));
 					return;
+				}
+
+				if let Some(ability_id) = enemy_spellbook.teleport {
+					let ability = enemy_spellbook
+						.abilities
+						.get(&ability_id)
+						.expect("abilityid has to exist");
+
+					if distance < 2 && ability.last_cast.is_none() {
+						let mut frontier = vec![*enemy_pos];
+						let mut reached = HashSet::new();
+						reached.insert(*enemy_pos);
+
+						while let Some(current) = frontier.pop() {
+							for (next, _) in
+								OrderedNeighbors::new(TilePos::from(current), *tile_map_size)
+									.filter_map(|pos| {
+										let walkable =
+											level_cache.destination(doors, *enemy_pos, pos.into());
+										(matches!(walkable, Destination::Walkable)
+											&& pos != TilePos::from(*player_pos))
+										.then_some((pos, 1))
+									}) {
+								if util::euclidean_distance(next.into(), *enemy_pos)
+									<= abilities
+										.0
+										.get(&ability_id)
+										.expect("id has to exist")
+										.range
+										.into() && enemy_vision.tiles.contains(&next.into())
+									&& !reached.contains(&GridCoords::from(next))
+								{
+									frontier.push(GridCoords::from(next));
+								}
+								reached.insert(GridCoords::from(next));
+							}
+						}
+
+						let mut furthest = *enemy_pos;
+						let mut max_range = 0;
+
+						for target in reached {
+							let distance = util::euclidean_distance(target, *player_pos);
+							if distance > max_range {
+								furthest = target;
+								max_range = distance;
+							}
+						}
+
+						if furthest != *enemy_pos {
+							cast_ability.send(AbilityEvent::new(
+								*enemy,
+								ability_id,
+								AbilityEventTarget::Tile(furthest),
+							));
+							let enemy = level_cache
+								.enemies
+								.remove(enemy_pos)
+								.expect("found no enemy at the moved position");
+							assert_eq!(
+								enemy, enemy_entity,
+								"wrong enemy found in level cache: searching for {:?} in {:?}",
+								enemy_pos, level_cache.enemies
+							);
+							level_cache.enemies.insert(furthest, enemy);
+
+							return;
+						}
+					}
 				}
 
 				// if we are JUST in range...
@@ -425,22 +500,33 @@ pub(crate) fn move_enemies(
 					)
 				});
 
-				let mut charge = true;
+				let charge = if let Some(ability_id) = enemy_spellbook.charge {
+					let mut charge = true;
 
-				for (start, end) in path.skip(1) {
-					if level_cache.walls.contains(&start)
-						|| level_cache.enemies.contains_key(&start)
-					{
-						charge = false;
-						break;
+					for (start, end) in path.skip(1) {
+						if level_cache.walls.contains(&start)
+							|| level_cache.enemies.contains_key(&start)
+						{
+							charge = false;
+							break;
+						}
+
+						// reached last one
+						if end == *player_pos {
+							destination = start;
+							cast_ability.send(AbilityEvent::new(
+								enemy_entity,
+								ability_id,
+								AbilityEventTarget::Entity(player_entity),
+							));
+							continue;
+						}
 					}
 
-					// reached last one
-					if end == *player_pos {
-						destination = start;
-						continue;
-					}
-				}
+					charge
+				} else {
+					false
+				};
 
 				if !charge && level_cache.enemies.contains_key(&destination) {
 					if let Some(autoattack_ranged) = &enemy_spellbook.autoattack_ranged {

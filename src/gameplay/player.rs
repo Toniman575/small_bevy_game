@@ -21,7 +21,7 @@ use super::{
 };
 use crate::animation::Animation;
 use crate::{
-	Destination, DoorOpen, GameState, LevelCache, PlayerBusy, PlayerEntityDestination,
+	Destination, DoorOpen, GameState, LevelCache, Object, PlayerBusy, PlayerEntityDestination,
 	TargetingMarker, Turn, TurnState, GRID_SIZE,
 };
 
@@ -224,7 +224,7 @@ pub(crate) fn door_interactions(
 	mut animation_state: ResMut<'_, TurnState>,
 	level_cache: Res<'_, LevelCache>,
 	tile_map_size: Query<'_, '_, &TilemapSize>,
-	player: Query<'_, '_, &GridCoords, With<Player>>,
+	mut player: Query<'_, '_, (&GridCoords, &mut Health), With<Player>>,
 	mut input: EventReader<'_, '_, KeyboardInput>,
 	mut turn_q: Query<'_, '_, &mut Turn>,
 ) {
@@ -241,7 +241,7 @@ pub(crate) fn door_interactions(
 	};
 
 	if let KeyCode::KeyF = input.key_code {
-		let player_grid_coords = player.single();
+		let (player_grid_coords, _) = player.single();
 		let tile_map_size = tile_map_size.single();
 
 		for tile_pos in Neighbors::get_square_neighboring_positions(
@@ -253,22 +253,36 @@ pub(crate) fn door_interactions(
 		{
 			if let Some((entity, iid, door)) = level_cache.doors.get(&GridCoords::from(*tile_pos)) {
 				let GameState {
-					doors, player_keys, ..
+					doors,
+					player_items,
+					..
 				} = state.deref_mut();
 
 				let open = doors.get_mut(iid).unwrap();
 
-				if !*open && *player_keys > 0 {
+				let keys = player_items.entry(Object::Key).or_insert(0);
+
+				if !*open && *keys > 0 {
 					let mut turn = turn_q.single_mut();
 					turn.set_if_neq(Turn(turn.0 + 1));
 					*animation_state = TurnState::EnemiesWaiting;
 
 					*open = true;
-					*player_keys -= 1;
+					*keys -= 1;
 					*state.doors.get_mut(&door.entity).unwrap() = true;
 					commands.trigger_targets(DoorOpen, *entity);
 				}
 			}
+		}
+	}
+
+	if let KeyCode::KeyH = input.key_code {
+		let (_, mut player_health) = player.single_mut();
+		let potions = state.player_items.entry(Object::Potion).or_insert(0);
+
+		if *potions > 0 && player_health.current != player_health.max {
+			*potions -= 1;
+			player_health.current = u16::min(player_health.current + 50, player_health.max);
 		}
 	}
 }

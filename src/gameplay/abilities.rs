@@ -216,7 +216,7 @@ impl Abilities {
 					3,
 					None,
 					AbilityEffect::Charge(5),
-					Some(3),
+					Some(10),
 					None,
 					None,
 				),

@@ -11,7 +11,7 @@
 	"iid": "32dcd460-25d0-11ef-be0e-e7ac9f6e32a3",
 	"jsonVersion": "1.5.3",
 	"appBuildId": 473703,
-	"nextUid": 103,
+	"nextUid": 104,
 	"identifierStyle": "Capitalize",
 	"toc": [],
 	"worldLayout": "GridVania",
@@ -638,6 +638,41 @@
 			"pivotX": 0.5,
 			"pivotY": 0.5,
 			"fieldDefs": []
+		},
+		{
+			"identifier": "Potion",
+			"uid": 103,
+			"tags": [],
+			"exportToToc": false,
+			"allowOutOfBounds": false,
+			"doc": null,
+			"width": 16,
+			"height": 16,
+			"resizableX": false,
+			"resizableY": false,
+			"minWidth": null,
+			"maxWidth": null,
+			"minHeight": null,
+			"maxHeight": null,
+			"keepAspectRatio": false,
+			"tileOpacity": 1,
+			"fillOpacity": 0.08,
+			"lineOpacity": 0,
+			"hollow": false,
+			"color": "#E4A672",
+			"renderMode": "Tile",
+			"showName": true,
+			"tilesetId": 89,
+			"tileRenderMode": "FitInside",
+			"tileRect": { "tilesetUid": 89, "x": 16, "y": 224, "w": 16, "h": 16 },
+			"uiTileRect": null,
+			"nineSliceBorders": [],
+			"maxCount": 0,
+			"limitScope": "PerLevel",
+			"limitBehavior": "MoveLastOne",
+			"pivotX": 0.5,
+			"pivotY": 0.5,
+			"fieldDefs": []
 		}
 	], "tilesets": [
 		{
@@ -871,7 +906,13 @@
 							"px": [184,168],
 							"fieldInstances": [
 								{ "__identifier": "Health", "__type": "Int", "__value": 50, "__tile": null, "defUid": 99, "realEditorValues": [] },
-								{ "__identifier": "Drops", "__type": "Array<String>", "__value": [], "__tile": null, "defUid": 100, "realEditorValues": [] }
+								{ "__identifier": "Drops", "__type": "Array<String>", "__value": [ "Key", "Potion" ], "__tile": null, "defUid": 100, "realEditorValues": [ {
+									"id": "V_String",
+									"params": ["Key"]
+								}, {
+									"id": "V_String",
+									"params": ["Potion"]
+								} ] }
 							],
 							"__worldX": 184,
 							"__worldY": 424
@@ -941,6 +982,22 @@
 							"fieldInstances": [],
 							"__worldX": 56,
 							"__worldY": 328
+						},
+						{
+							"__identifier": "Potion",
+							"__grid": [3,8],
+							"__pivot": [0.5,0.5],
+							"__tags": [],
+							"__tile": { "tilesetUid": 89, "x": 16, "y": 224, "w": 16, "h": 16 },
+							"__smartColor": "#E4A672",
+							"iid": "c688ced0-73f0-11ef-902d-3baf4ac65ab3",
+							"width": 16,
+							"height": 16,
+							"defUid": 103,
+							"px": [56,136],
+							"fieldInstances": [],
+							"__worldX": 56,
+							"__worldY": 392
 						}
 					]
 				},

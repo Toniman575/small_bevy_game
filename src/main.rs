@@ -1,12 +1,10 @@
 //! TODO:
 //! - Abilities
 //!   - Implement tooltip.
-//!   - Make sure its easy to add new abilities.
 //!   - Add resources for abilities.
 //!   - Make enemies use new abilities. Probably with a simple state machine.
 //! - Debuffs
-//!   - Implement bleeding debuff on enemies, think about presentation.
-//!   - Make sure its easy to integrate with abilities and add new ones.
+//!   - Debuff Presentation.
 //! - Bonus
 //!   - Add displacing abilities.
 //!   - Delete `LevelCache`.
@@ -39,8 +37,8 @@ use std::mem;
 use std::ops::{Deref, DerefMut};
 
 use bevy::color::palettes::basic::*;
-use bevy::input::ButtonState;
 use bevy::input::keyboard::KeyboardInput;
+use bevy::input::ButtonState;
 use bevy::prelude::{AssetServer, *};
 use bevy::utils::{Entry, HashMap, HashSet};
 use bevy::window::PrimaryWindow;
@@ -48,7 +46,7 @@ use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
 use bevy_ecs_tilemap::prelude::*;
 use bevy_egui::egui::{Margin, TextWrapMode, TextureId, TopBottomPanel};
-use bevy_egui::{EguiPlugin, EguiSet, egui};
+use bevy_egui::{egui, EguiPlugin, EguiSet};
 use bevy_inspector_egui::bevy_egui::EguiContexts;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_pancam::{DirectionKeys, PanCam, PanCamPlugin};
@@ -59,13 +57,13 @@ use egui::{
 };
 use line_drawing::WalkGrid;
 
-use self::fow::{ApplyFoW, generate_fov, update_memory};
+use self::fow::{generate_fov, update_memory, ApplyFoW};
 use self::gameplay::{
+	cast_ability, death, door_interactions, handle_ability_event, move_enemies, player_movement,
+	select_ability, spawn_healthbar, tick_cooldowns, tick_status_effects, update_healthbar,
 	Abilities, AbilityEffect, AbilityEvent, ActiveAbility, BaseSkeletonBundle,
 	CurrentStatusEffects, DeathEvent, EffectType, Enemy, Health, MageSkeletonBundle, Player,
-	PlayerBundle, Spellbook, StatusEffect, Vision, cast_ability, death, door_interactions,
-	handle_ability_event, move_enemies, player_movement, select_ability, spawn_healthbar,
-	tick_cooldowns, tick_status_effects, update_healthbar,
+	PlayerBundle, Spellbook, StatusEffect, Vision,
 };
 
 /// The size of the Grid in pixels.
@@ -99,21 +97,100 @@ enum PlayerBusy {
 	Moving,
 }
 
-/// Marker components.
-#[derive(Component, Default)]
-struct Key;
+/// Marker component for any object.
+#[derive(Clone, Component, Copy, Eq, Hash, PartialEq, Reflect)]
+enum Object {
+	/// A key.
+	Key,
+	/// A potion.
+	Potion,
+}
+
+impl Object {
+	/// Make [`Object`] from string.
+	fn from_str(string: &str) -> Option<Self> {
+		Some(match string {
+			"Key" => Self::Key,
+			"Potion" => Self::Potion,
+			_ => return None,
+		})
+	}
+
+	/// [`Object`] [`Name`].
+	const fn name(self) -> &'static str {
+		match self {
+			Self::Key => "Key",
+			Self::Potion => "Potion",
+		}
+	}
+
+	/// Texture UV.
+	fn texture_uv(self) -> egui::Rect {
+		match self {
+			Self::Key => egui::Rect::from([
+				Pos2::new(1. / 400. * 32., 1. / 400. * 64.),
+				Pos2::new(1. / 400. * 48., 1. / 400. * 80.),
+			]),
+			Self::Potion => egui::Rect::from([
+				Pos2::new(1. / 400. * 16., 1. / 400. * 224.),
+				Pos2::new(1. / 400. * 32., 1. / 400. * 240.),
+			]),
+		}
+	}
+
+	/// Texture rect.
+	fn texture_rect(self) -> Rect {
+		match self {
+			Self::Key => Rect::new(32., 64., 48., 80.),
+			Self::Potion => Rect::new(16., 224., 32., 240.),
+		}
+	}
+}
 
 /// Key bundle.
-#[derive(Bundle, Default, LdtkEntity)]
+#[derive(Bundle, LdtkEntity)]
 struct KeyBundle {
-	/// Key marker component.
-	key:                 Key,
+	/// Object marker component.
+	object:              Object,
 	/// Sprite bundle.
 	#[sprite_sheet_bundle]
 	sprite_sheet_bundle: LdtkSpriteSheetBundle,
 	/// Key grid coordinates.
 	#[grid_coords]
 	grid_coords:         GridCoords,
+}
+
+impl Default for KeyBundle {
+	fn default() -> Self {
+		Self {
+			object:              Object::Key,
+			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
+			grid_coords:         GridCoords::default(),
+		}
+	}
+}
+
+/// Potion bundle.
+#[derive(Bundle, LdtkEntity)]
+struct PotionBundle {
+	/// Object marker component.
+	object:              Object,
+	/// Sprite bundle.
+	#[sprite_sheet_bundle]
+	sprite_sheet_bundle: LdtkSpriteSheetBundle,
+	/// Key grid coordinates.
+	#[grid_coords]
+	grid_coords:         GridCoords,
+}
+
+impl Default for PotionBundle {
+	fn default() -> Self {
+		Self {
+			object:              Object::Potion,
+			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
+			grid_coords:         GridCoords::default(),
+		}
+	}
 }
 
 /// Component for tracking the item drops of enemies entities.
@@ -215,8 +292,8 @@ struct LevelCache {
 	doors:   HashMap<GridCoords, (Entity, EntityIid, Door)>,
 	/// The cashed enemies of this level.
 	enemies: HashMap<GridCoords, Entity>,
-	/// The cashed keys of this level.
-	keys:    HashMap<GridCoords, (Entity, ItemSource)>,
+	/// The cashed objects of this level.
+	objects: HashMap<GridCoords, (Entity, Object, ItemSource)>,
 	/// The level width in tiles.
 	width:   i32,
 	/// The level height in tiles.
@@ -406,11 +483,11 @@ fn level_spawn(
 		(&mut GridCoords, Entity, &EntityIid, &Drops),
 		(With<Enemy>, Without<Player>),
 	>,
-	keys: Query<
+	objects: Query<
 		'_,
 		'_,
-		(&GridCoords, Entity, &EntityIid),
-		(With<Key>, Without<Enemy>, Without<Player>),
+		(&GridCoords, Entity, &EntityIid, &Object),
+		(Without<Enemy>, Without<Player>),
 	>,
 	mut doors: Query<
 		'_,
@@ -442,26 +519,33 @@ fn level_spawn(
 	for (grid_coords, entity, iid, drops) in &enemies {
 		enemies_map.insert(*grid_coords, entity);
 
-		if drops.0.iter().any(|drop| drop == "Key") {
+		for object in drops.0.iter().map(|drop| Object::from_str(drop).unwrap()) {
 			state
-				.keys
+				.objects
 				.entry(ItemSource::Loot(iid.clone()))
+				.or_default()
+				.entry(object)
 				.or_insert(false);
 		}
 	}
 
-	let mut keys_map = HashMap::new();
+	let mut objects_map = HashMap::new();
 
-	for (position, entity, iid) in &keys {
-		let taken = match state.keys.entry(ItemSource::Static(iid.clone())) {
-			Entry::Occupied(value) => *value.get(),
-			Entry::Vacant(entry) => *entry.insert(false),
-		};
+	for (position, entity, iid, object) in &objects {
+		let taken = *state
+			.objects
+			.entry(ItemSource::Static(iid.clone()))
+			.or_default()
+			.entry(*object)
+			.or_insert(false);
 
 		if taken {
 			commands.entity(entity).insert(Visibility::Hidden);
 		} else {
-			keys_map.insert(*position, (entity, ItemSource::Static(iid.clone())));
+			objects_map.insert(
+				*position,
+				(entity, *object, ItemSource::Static(iid.clone())),
+			);
 		}
 	}
 
@@ -486,7 +570,7 @@ fn level_spawn(
 	*level_cache = LevelCache {
 		walls:   walls.iter().copied().collect(),
 		enemies: enemies_map,
-		keys:    keys_map,
+		objects: objects_map,
 		doors:   doors_map,
 		width:   level.px_wid / GRID_SIZE,
 		height:  level.px_hei / GRID_SIZE,
@@ -587,12 +671,12 @@ fn door_trigger(
 struct GameState {
 	/// State of each door.
 	doors:         HashMap<EntityIid, bool>,
-	/// State of each key.
-	keys:          HashMap<ItemSource, bool>,
+	/// State of each object.
+	objects:       HashMap<ItemSource, HashMap<Object, bool>>,
 	/// Current enemy order.
 	enemies:       Vec<(Entity, bool)>,
-	/// Amount of keys the player possesses.
-	player_keys:   u8,
+	/// Amount of items the player possesses.
+	player_items:  HashMap<Object, u8>,
 	/// Tiles already seen by the player.
 	visited_tiles: HashMap<LevelIid, HashSet<GridCoords>>,
 }
@@ -941,56 +1025,57 @@ fn item_ui(
 		.frame(Frame::none())
 		.show(context, |ui| {
 			ui.with_layout(Layout::top_down(Align::Max), |ui| {
-				if state.player_keys > 0 {
-					Frame::default()
-						.fill(Color32::BLACK)
-						.stroke(Stroke::new(2., Color32::WHITE))
-						.rounding(5.)
-						.show(ui, |ui| {
-							let (response, painter) =
-								ui.allocate_painter(egui::Vec2::new(64., 64.), Sense {
-									click:     false,
-									drag:      false,
-									focusable: false,
-								});
+				for (item, count) in &state.player_items {
+					if *count > 0 {
+						Frame::default()
+							.fill(Color32::BLACK)
+							.stroke(Stroke::new(2., Color32::WHITE))
+							.rounding(5.)
+							.show(ui, |ui| {
+								let (response, painter) = ui.allocate_painter(
+									egui::Vec2::new(64., 64.),
+									Sense {
+										click:     false,
+										drag:      false,
+										focusable: false,
+									},
+								);
 
-							painter.image(
-								textures.props_id,
-								response.rect,
-								egui::Rect::from([
-									Pos2::new(1. / 400. * 32., 1. / 400. * 64.),
-									Pos2::new(1. / 400. * 48., 1. / 400. * 80.),
-								]),
-								Color32::WHITE,
-							);
+								painter.image(
+									textures.props_id,
+									response.rect,
+									item.texture_uv(),
+									Color32::WHITE,
+								);
 
-							let text = format!("{}x", state.player_keys);
+								let text = format!("{count}x");
 
-							// Text shadow.
-							painter.text(
-								(response.rect.right_top() - Pos2::new(4., -4.)).to_pos2(),
-								Align2::RIGHT_TOP,
-								&text,
-								FontId {
-									size: 24.,
-									..FontId::default()
-								},
-								Color32::BLACK,
-							);
+								// Text shadow.
+								painter.text(
+									(response.rect.right_top() - Pos2::new(4., -4.)).to_pos2(),
+									Align2::RIGHT_TOP,
+									&text,
+									FontId {
+										size: 24.,
+										..FontId::default()
+									},
+									Color32::BLACK,
+								);
 
-							painter.text(
-								(response.rect.right_top() - Pos2::new(2., -2.)).to_pos2(),
-								Align2::RIGHT_TOP,
-								text,
-								FontId {
-									size: 24.,
-									..FontId::default()
-								},
-								Color32::WHITE,
-							);
+								painter.text(
+									(response.rect.right_top() - Pos2::new(2., -2.)).to_pos2(),
+									Align2::RIGHT_TOP,
+									text,
+									FontId {
+										size: 24.,
+										..FontId::default()
+									},
+									Color32::WHITE,
+								);
 
-							response
-						});
+								response
+							});
+					}
 				}
 			})
 		});
@@ -1081,12 +1166,14 @@ fn ability_ui(
 						.rounding(5.)
 						.outer_margin(Margin::symmetric(2., 2.))
 						.show(ui, |ui| {
-							let (response, painter) =
-								ui.allocate_painter(egui::Vec2::new(64., 64.), Sense {
+							let (response, painter) = ui.allocate_painter(
+								egui::Vec2::new(64., 64.),
+								Sense {
 									click:     false,
 									drag:      false,
 									focusable: false,
-								});
+								},
+							);
 
 							if let Some(icon) = ability.icon {
 								painter.image(
@@ -1186,12 +1273,14 @@ fn player_effect_ui(
 						.stroke(Stroke::new(2., Color32::WHITE))
 						.rounding(5.)
 						.show(ui, |ui| {
-							let (response, painter) =
-								ui.allocate_painter(egui::Vec2::new(64., 64.), Sense {
+							let (response, painter) = ui.allocate_painter(
+								egui::Vec2::new(64., 64.),
+								Sense {
 									click:     false,
 									drag:      false,
 									focusable: false,
-								});
+								},
+							);
 
 							/*painter.image(
 								textures.props_id,
@@ -1331,6 +1420,7 @@ fn main() {
 		.add_event::<AbilityEvent>()
 		.register_ldtk_entity::<PlayerBundle>("Player")
 		.register_ldtk_entity::<KeyBundle>("Key")
+		.register_ldtk_entity::<PotionBundle>("Potion")
 		.register_ldtk_entity::<BaseSkeletonBundle>("BaseSkeleton")
 		.register_ldtk_entity::<MageSkeletonBundle>("MageSkeleton")
 		.register_ldtk_entity::<DoorBundle>("Door")

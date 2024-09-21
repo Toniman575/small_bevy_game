@@ -8,7 +8,7 @@ use bevy_ecs_ldtk::{GridCoords, LevelSelection};
 use bevy_ecs_tilemap::tiles::{TileColor, TileVisible};
 
 use crate::gameplay::{Enemy, Player, Vision};
-use crate::{util, Debug, Door, GameState, Key, LevelCache, Turn};
+use crate::{util, Debug, Door, GameState, LevelCache, Object, Turn};
 
 /// Calculates the field of view from an entity with [`Vision`].
 #[expect(clippy::needless_pass_by_value)]
@@ -85,7 +85,7 @@ pub(crate) fn apply_fow(
 			&GridCoords,
 			&mut Visibility,
 			&mut Sprite,
-			Has<Key>,
+			Has<Object>,
 			Has<Enemy>,
 			Has<Door>,
 		),
@@ -132,7 +132,7 @@ pub(crate) fn apply_fow(
 	'outer: for (entity, grid_coords, mut visibility, mut sprite, has_key, has_enemy, has_door) in
 		&mut other_visible_q
 	{
-		if has_key && !level_cache.keys.contains_key(grid_coords) {
+		if has_key && !level_cache.objects.contains_key(grid_coords) {
 			continue;
 		}
 

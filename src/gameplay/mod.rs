@@ -26,8 +26,8 @@ pub(crate) use self::player::{
 use crate::animation::{Animation, AnimationAbility, ArrivedAtTile};
 use crate::util::{flip_sprite, OrderedNeighbors};
 use crate::{
-	util, Drops, GameState, ItemSource, Key, LevelCache, PlayerBusy, TextureIcon, Textures, Turn,
-	TurnState, GRID_SIZE,
+	util, Drops, GameState, ItemSource, LevelCache, Object, PlayerBusy, TextureIcon, Textures,
+	Turn, TurnState, GRID_SIZE,
 };
 
 /// Component for tracking health in entities.
@@ -303,7 +303,9 @@ pub(crate) struct Spellbook {
 	/// The Id of a ranged autoattack of an entity.
 	pub(crate) autoattack_ranged: Option<AbilityId>,
 	/// The Id of a charge attack of an entity.
-	pub(crate) charge: Option<AbilityId>,
+	pub(crate) charge:            Option<AbilityId>,
+	/// The Id of a charge attack of an entity.
+	pub(crate) teleport:          Option<AbilityId>,
 	/// All abilities an entity can cast.
 	pub(crate) abilities:         HashMap<AbilityId, SpellbookAbility>,
 }
@@ -314,10 +316,12 @@ impl Spellbook {
 		Self {
 			autoattack_melee:  Some(AbilityId(0)),
 			autoattack_ranged: Some(AbilityId(1)),
-			charge: None,
+			charge:            None,
+			teleport:          None,
 			abilities:         HashMap::from_iter([
 				(AbilityId(0), SpellbookAbility::default()),
 				(AbilityId(1), SpellbookAbility::default()),
+				(AbilityId(4), SpellbookAbility::default()),
 			]),
 		}
 	}
@@ -327,10 +331,12 @@ impl Spellbook {
 		Self {
 			autoattack_melee:  Some(AbilityId(10)),
 			autoattack_ranged: Some(AbilityId(11)),
-			charge: Some(AbilityId(13)),
+			charge:            Some(AbilityId(13)),
+			teleport:          None,
 			abilities:         HashMap::from_iter([
 				(AbilityId(10), SpellbookAbility::default()),
 				(AbilityId(11), SpellbookAbility::default()),
+				(AbilityId(13), SpellbookAbility::default()),
 			]),
 		}
 	}
@@ -340,8 +346,12 @@ impl Spellbook {
 		Self {
 			autoattack_melee:  None,
 			autoattack_ranged: Some(AbilityId(12)),
-			charge: None,
-			abilities:         HashMap::from_iter([(AbilityId(12), SpellbookAbility::default())]),
+			charge:            None,
+			teleport:          Some(AbilityId(4)),
+			abilities:         HashMap::from_iter([
+				(AbilityId(12), SpellbookAbility::default()),
+				(AbilityId(4), SpellbookAbility::default()),
+			]),
 		}
 	}
 }
@@ -395,6 +405,7 @@ pub(crate) fn handle_ability_event(
 			mut health,
 			_,
 			mut caster_status_effect,
+			caster_is_player,
 			..,
 		) = entities_q
 			.get_mut(ability_event.caster_entity)
@@ -459,7 +470,10 @@ pub(crate) fn handle_ability_event(
 
 				commands.trigger_targets(ArrivedAtTile, caster_entity);
 
-				turn.0 += 1;
+				if caster_is_player {
+					turn.0 += 1;
+				}
+
 				*animation_state = TurnState::EnemiesWaiting;
 
 				continue;
@@ -510,31 +524,28 @@ pub(crate) fn handle_ability_event(
 			}
 		};
 
-		let [
-			(
-				caster_entity,
-				caster_transform,
-				caster_grid_coord,
-				mut spellbook,
-				mut sprite,
-				_,
-				_,
-				_,
-				caster_is_player,
-				caster_is_enemy,
-			),
-			(
-				_,
-				target_transform,
-				target_grid_coord,
-				_,
-				_,
-				mut target_health,
-				mut target_vision,
-				mut target_status_effect,
-				..,
-			),
-		] = entities_q.many_mut([ability_event.caster_entity, target_entity]);
+		let [(
+			caster_entity,
+			caster_transform,
+			caster_grid_coord,
+			mut spellbook,
+			mut sprite,
+			_,
+			_,
+			_,
+			caster_is_player,
+			caster_is_enemy,
+		), (
+			_,
+			target_transform,
+			target_grid_coord,
+			_,
+			_,
+			mut target_health,
+			mut target_vision,
+			mut target_status_effect,
+			..,
+		)] = entities_q.many_mut([ability_event.caster_entity, target_entity]);
 
 		flip_sprite(*caster_grid_coord, *target_grid_coord, &mut sprite);
 
@@ -908,97 +919,99 @@ pub(crate) fn death(
 			.remove(grid_coords)
 			.expect("Enemy should be in level cache.");
 
-		for drop in drops.0.drain(..) {
-			match drop.as_str() {
-				"Key" => {
-					// This has been dropped and picked up before. So don't drop it again!
-					if *game_state
-						.keys
-						.get(&ItemSource::Loot(entity_iid.clone()))
-						.unwrap()
-					{
-						continue;
-					}
-
-					#[expect(clippy::shadow_same)]
-					let mut grid_coords = *grid_coords;
-
-					if level_cache.keys.get(&grid_coords).is_some() {
-						let mut checked = HashSet::new();
-						let mut next = VecDeque::new();
-						checked.insert(grid_coords);
-						next.push_back(grid_coords);
-
-						'outer: loop {
-							let Some(new_grid_coords) = next.pop_front() else {
-								panic!("no empty floor found to dop items")
-							};
-
-							for new_grid_coords in
-								OrderedNeighbors::new(new_grid_coords.into(), *tile_map_size)
-									.map(GridCoords::from)
-							{
-								if !checked.insert(new_grid_coords) {
-									continue;
-								}
-
-								if level_cache.walls.get(&new_grid_coords).is_some() {
-									continue;
-								}
-
-								if level_cache.keys.get(&new_grid_coords).is_none() {
-									grid_coords = new_grid_coords;
-									break 'outer;
-								}
-
-								next.push_back(new_grid_coords);
-							}
-						}
-					}
-
-					let entity = commands
-						.spawn((
-							Name::new("Key"),
-							Key,
-							grid_coords,
-							SpriteBundle {
-								sprite: Sprite {
-									custom_size: Some(Vec2::new(16., 16.)),
-									rect: Some(Rect::new(32., 64., 48., 80.)),
-									..Sprite::default()
-								},
-								texture: textures.props.clone(),
-								visibility: if player_vision.tiles.contains(&grid_coords) {
-									Visibility::default()
-								} else {
-									Visibility::Hidden
-								},
-								..SpriteBundle::default()
-							},
-						))
-						.id();
-					commands
-						.entity(
-							layers
-								.iter()
-								.find(|(_, layer)| {
-									layer.iid == "95801fc0-25d0-11ef-8498-6b3d2275a196"
-								})
-								.unwrap()
-								.0,
-						)
-						.add_child(entity);
-
-					assert!(
-						level_cache
-							.keys
-							.insert(grid_coords, (entity, ItemSource::Loot(entity_iid.clone())))
-							.is_none(),
-						"found key at this position already",
-					);
-				}
-				_ => unimplemented!(),
+		for object in drops
+			.0
+			.drain(..)
+			.map(|drop| Object::from_str(&drop).unwrap())
+		{
+			// This has been dropped and picked up before. So don't drop it again!
+			if *game_state
+				.objects
+				.get(&ItemSource::Loot(entity_iid.clone()))
+				.unwrap()
+				.get(&object)
+				.unwrap()
+			{
+				continue;
 			}
+
+			#[expect(clippy::shadow_same)]
+			let mut grid_coords = *grid_coords;
+
+			if level_cache.objects.get(&grid_coords).is_some() {
+				let mut checked = HashSet::new();
+				let mut next = VecDeque::new();
+				checked.insert(grid_coords);
+				next.push_back(grid_coords);
+
+				'outer: loop {
+					let Some(new_grid_coords) = next.pop_front() else {
+						panic!("no empty floor found to dop items")
+					};
+
+					for new_grid_coords in
+						OrderedNeighbors::new(new_grid_coords.into(), *tile_map_size)
+							.map(GridCoords::from)
+					{
+						if !checked.insert(new_grid_coords) {
+							continue;
+						}
+
+						if level_cache.walls.get(&new_grid_coords).is_some() {
+							continue;
+						}
+
+						if level_cache.objects.get(&new_grid_coords).is_none() {
+							grid_coords = new_grid_coords;
+							break 'outer;
+						}
+
+						next.push_back(new_grid_coords);
+					}
+				}
+			}
+
+			let entity = commands
+				.spawn((
+					Name::new(object.name()),
+					object,
+					grid_coords,
+					SpriteBundle {
+						sprite: Sprite {
+							custom_size: Some(Vec2::new(16., 16.)),
+							rect: Some(object.texture_rect()),
+							..Sprite::default()
+						},
+						texture: textures.props.clone(),
+						visibility: if player_vision.tiles.contains(&grid_coords) {
+							Visibility::default()
+						} else {
+							Visibility::Hidden
+						},
+						..SpriteBundle::default()
+					},
+				))
+				.id();
+			commands
+				.entity(
+					layers
+						.iter()
+						.find(|(_, layer)| layer.iid == "95801fc0-25d0-11ef-8498-6b3d2275a196")
+						.unwrap()
+						.0,
+				)
+				.add_child(entity);
+
+			assert!(
+				level_cache
+					.objects
+					.insert(
+						grid_coords,
+						(entity, object, ItemSource::Loot(entity_iid.clone()))
+					)
+					.is_none(),
+				"found object at this position already",
+			);
 		}
 	}
 }
