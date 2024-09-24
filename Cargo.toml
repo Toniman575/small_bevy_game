@@ -19,6 +19,7 @@ symmetric-shadowcasting = "0.2"
 
 [patch.crates-io]
 bevy_input = { git = "https://github.com/daxpedda/bevy", branch = "small-bevy-game" }
+bevy_pancam = { git = "https://github.com/johanhelsing/bevy_pancam", rev = "9e2c9b99f895f4662e2cf2a6d1cc0cdc1285550d" }
 bevy_winit = { git = "https://github.com/daxpedda/bevy", branch = "small-bevy-game" }
 
 [features]

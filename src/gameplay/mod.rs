@@ -576,11 +576,13 @@ pub(crate) fn handle_ability_event(
 
 		if let AbilityEffect::Charge(_) = &ability.effect {
 			let target = WalkGrid::new(
-				IVec2::from(*target_grid_coord).into(),
 				IVec2::from(*caster_grid_coord).into(),
+				IVec2::from(*target_grid_coord).into(),
 			)
-			.nth(1)
-			.unwrap();
+			.steps()
+			.last()
+			.unwrap()
+			.0;
 			let target = GridCoords::from(IVec2::from(target));
 			let target = utils::grid_coords_to_translation(target, IVec2::splat(GRID_SIZE))
 				.extend(caster_transform.translation.z);
@@ -883,7 +885,7 @@ pub(crate) fn death(
 		return;
 	}
 
-	let tile_map_size = tile_map_size.single();
+	let tile_map_size = tile_map_size.iter().next().unwrap();
 
 	for event in deaths.read() {
 		let (

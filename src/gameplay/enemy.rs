@@ -222,7 +222,7 @@ pub(crate) fn move_enemies(
 	for (enemy, ready) in enemies.iter_mut().filter(|(_, ready)| *ready) {
 		*ready = false;
 
-		let tile_map_size = tile_map_size.single();
+		let tile_map_size = tile_map_size.iter().next().unwrap();
 		let (player_entity, player_pos, player_vision) = player.single();
 		let (
 			enemy_entity,
@@ -500,35 +500,50 @@ pub(crate) fn move_enemies(
 					)
 				});
 
-				let charge = if let Some(ability_id) = enemy_spellbook.charge {
-					let mut charge = true;
+				if let Some(ability_id) = enemy_spellbook.charge {
+					if enemy_spellbook
+						.abilities
+						.get(&ability_id)
+						.expect("abilityid has to exist")
+						.last_cast
+						.is_none()
+					{
+						for (start, end) in path.skip(1) {
+							if level_cache.walls.contains(&start)
+								|| level_cache.enemies.contains_key(&start)
+							{
+								break;
+							}
 
-					for (start, end) in path.skip(1) {
-						if level_cache.walls.contains(&start)
-							|| level_cache.enemies.contains_key(&start)
-						{
-							charge = false;
-							break;
-						}
+							// reached last one
+							if end == *player_pos {
+								destination = start;
+								cast_ability.send(AbilityEvent::new(
+									enemy_entity,
+									ability_id,
+									AbilityEventTarget::Entity(player_entity),
+								));
 
-						// reached last one
-						if end == *player_pos {
-							destination = start;
-							cast_ability.send(AbilityEvent::new(
-								enemy_entity,
-								ability_id,
-								AbilityEventTarget::Entity(player_entity),
-							));
-							continue;
+								let enemy = level_cache
+									.enemies
+									.remove(enemy_pos)
+									.expect("found no enemy at the moved position");
+								assert_eq!(
+									enemy, enemy_entity,
+									"wrong enemy found in level cache: searching for {:?} in {:?}",
+									enemy, level_cache.enemies
+								);
+								level_cache.enemies.insert(destination, enemy);
+								info!("inserted {enemy} in {destination:?}");
+								*turn_state = TurnState::EnemiesBusy;
+
+								return;
+							}
 						}
 					}
+				}
 
-					charge
-				} else {
-					false
-				};
-
-				if !charge && level_cache.enemies.contains_key(&destination) {
+				if level_cache.enemies.contains_key(&destination) {
 					if let Some(autoattack_ranged) = &enemy_spellbook.autoattack_ranged {
 						if let Some((ability_id, _)) =
 							enemy_spellbook.abilities.get_key_value(autoattack_ranged)
@@ -578,7 +593,7 @@ pub(crate) fn move_enemies(
 		assert_eq!(
 			enemy, enemy_entity,
 			"wrong enemy found in level cache: searching for {:?} in {:?}",
-			enemy_pos, level_cache.enemies
+			enemy, level_cache.enemies
 		);
 		level_cache.enemies.insert(destination, enemy);
 

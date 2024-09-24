@@ -242,7 +242,7 @@ pub(crate) fn door_interactions(
 
 	if let KeyCode::KeyF = input.key_code {
 		let (player_grid_coords, _) = player.single();
-		let tile_map_size = tile_map_size.single();
+		let tile_map_size = tile_map_size.iter().next().unwrap();
 
 		for tile_pos in Neighbors::get_square_neighboring_positions(
 			&TilePos::from(*player_grid_coords),

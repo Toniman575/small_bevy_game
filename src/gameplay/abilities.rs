@@ -83,7 +83,7 @@ impl Abilities {
 					5,
 					Some(0),
 					AbilityEffect::Teleport,
-					None,
+					Some(10),
 					None,
 					None,
 				),
