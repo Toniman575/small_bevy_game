@@ -19,7 +19,9 @@ use bevy_tweening::{Animator, EaseMethod, Tween};
 use line_drawing::WalkGrid;
 
 pub(crate) use self::abilities::Abilities;
-pub(crate) use self::enemy::{move_enemies, BaseSkeletonBundle, Enemy, MageSkeletonBundle};
+pub(crate) use self::enemy::{
+	move_enemies, BaseSkeletonBundle, Boss, Enemy, MageSkeletonBundle, WarriorSkeletonBundle,
+};
 pub(crate) use self::player::{
 	cast_ability, door_interactions, player_movement, select_ability, Player, PlayerBundle,
 };
@@ -321,13 +323,37 @@ impl Spellbook {
 			abilities:         HashMap::from_iter([
 				(AbilityId(0), SpellbookAbility::default()),
 				(AbilityId(1), SpellbookAbility::default()),
-				(AbilityId(4), SpellbookAbility::default()),
 			]),
 		}
 	}
 
-	/// Default spellbook for Base Skeletons.
+	/// Default spellbook for base skeletons.
 	fn base_skeleton() -> Self {
+		Self {
+			autoattack_melee:  Some(AbilityId(10)),
+			autoattack_ranged: Some(AbilityId(11)),
+			charge:            None,
+			teleport:          None,
+			abilities:         HashMap::from_iter([
+				(AbilityId(10), SpellbookAbility::default()),
+				(AbilityId(11), SpellbookAbility::default()),
+			]),
+		}
+	}
+
+	/// Default spellbook for mage skeletons.
+	fn mage_skeleton() -> Self {
+		Self {
+			autoattack_melee:  None,
+			autoattack_ranged: Some(AbilityId(12)),
+			charge:            None,
+			teleport:          None,
+			abilities:         HashMap::from_iter([(AbilityId(12), SpellbookAbility::default())]),
+		}
+	}
+
+	/// Default spellbook for knight skeletons.
+	fn warrior_skeleton() -> Self {
 		Self {
 			autoattack_melee:  Some(AbilityId(10)),
 			autoattack_ranged: Some(AbilityId(11)),
@@ -337,20 +363,6 @@ impl Spellbook {
 				(AbilityId(10), SpellbookAbility::default()),
 				(AbilityId(11), SpellbookAbility::default()),
 				(AbilityId(13), SpellbookAbility::default()),
-			]),
-		}
-	}
-
-	/// Default spellbook for Mage Skeletons.
-	fn mage_skeleton() -> Self {
-		Self {
-			autoattack_melee:  None,
-			autoattack_ranged: Some(AbilityId(12)),
-			charge:            None,
-			teleport:          Some(AbilityId(4)),
-			abilities:         HashMap::from_iter([
-				(AbilityId(12), SpellbookAbility::default()),
-				(AbilityId(4), SpellbookAbility::default()),
 			]),
 		}
 	}
@@ -856,7 +868,7 @@ pub(crate) fn death(
 	mut commands: Commands<'_, '_>,
 	textures: Res<'_, Textures>,
 	mut deaths: EventReader<'_, '_, DeathEvent>,
-	player_q: Query<'_, '_, &Vision, With<Player>>,
+	mut player_q: Query<'_, '_, (&Vision, &mut Spellbook), With<Player>>,
 	mut animations: Query<
 		'_,
 		'_,
@@ -869,6 +881,7 @@ pub(crate) fn death(
 			&mut Animation,
 			&mut Drops,
 			Option<&Enemy>,
+			Option<&Boss>,
 			Has<Player>,
 		),
 	>,
@@ -877,7 +890,7 @@ pub(crate) fn death(
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut game_state: ResMut<'_, GameState>,
 ) {
-	let Ok(player_vision) = player_q.get_single() else {
+	let Ok((player_vision, mut player_spellbook)) = player_q.get_single_mut() else {
 		return;
 	};
 
@@ -897,6 +910,7 @@ pub(crate) fn death(
 			mut animation,
 			mut drops,
 			enemy,
+			boss,
 			player,
 		) = animations.get_mut(event.0).unwrap();
 
@@ -1014,6 +1028,29 @@ pub(crate) fn death(
 					.is_none(),
 				"found object at this position already",
 			);
+		}
+
+		if let Some(enemy) = enemy {
+			if let Some(boss) = boss {
+				if boss.0 {
+					match enemy {
+						Enemy::WarriorSkeleton => {
+							player_spellbook.charge = Some(AbilityId(13));
+							assert!(player_spellbook
+								.abilities
+								.insert(AbilityId(13), SpellbookAbility { last_cast: None })
+								.is_none());
+						}
+						Enemy::MageSkeleton => {
+							assert!(player_spellbook
+								.abilities
+								.insert(AbilityId(3), SpellbookAbility { last_cast: None })
+								.is_none());
+						}
+						_ => {}
+					}
+				}
+			}
 		}
 	}
 }

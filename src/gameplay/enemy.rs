@@ -26,17 +26,19 @@ use crate::{Destination, Drops, GameState, LevelCache, TurnState, GRID_SIZE};
 /// Enemy marker component.
 #[derive(Clone, Component, Copy, PartialEq, Eq)]
 pub(crate) enum Enemy {
-	/// Basic Skeleton.
+	/// Basic skeleton.
 	BaseSkeleton,
 	/// Skeleton caster.
 	MageSkeleton,
+	/// Skeleton warrior
+	WarriorSkeleton,
 }
 
 impl Enemy {
 	/// Return idle [`Animation`].
 	pub(crate) fn idle_animation(self) -> Animation {
 		match self {
-			Self::BaseSkeleton | Self::MageSkeleton => Animation {
+			Self::BaseSkeleton | Self::MageSkeleton | Self::WarriorSkeleton => Animation {
 				timer:     Timer::from_seconds(0.25, TimerMode::Repeating),
 				first:     0,
 				last:      3,
@@ -66,6 +68,13 @@ impl Enemy {
 					-(1. / 33. * ((33. - 32.) / 2.)),
 				))),
 			},
+			Self::WarriorSkeleton => Animation {
+				timer:     Timer::from_seconds(0.1, TimerMode::Repeating),
+				first:     9,
+				last:      14,
+				repeating: true,
+				anchor:    None,
+			},
 		}
 	}
 
@@ -92,11 +101,35 @@ impl Enemy {
 					-(1. / 56. * ((56. - 32.) / 2.)),
 				))),
 			},
+			Self::WarriorSkeleton => Animation {
+				timer:     Timer::from_seconds(0.125, TimerMode::Repeating),
+				first:     18,
+				last:      23,
+				repeating: false,
+				anchor:    Some(Anchor::Custom(Vec2::new(
+					0.,
+					-(1. / 46. * ((46. - 32.) / 2.)),
+				))),
+			},
 		}
 	}
 }
 
-/// Enemy bundle.
+/// If an entity is a boss or not.
+#[derive(Clone, Component, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Boss(pub(crate) bool);
+
+impl From<&EntityInstance> for Boss {
+	fn from(entity_instance: &EntityInstance) -> Self {
+		let is_boss = *entity_instance
+			.get_bool_field("Boss")
+			.expect("expected entity to have non-nullable `Health` bool field");
+
+		Self(is_boss)
+	}
+}
+
+/// Base Skeleton bundle.
 #[derive(Bundle, LdtkEntity)]
 pub(crate) struct BaseSkeletonBundle {
 	/// Enemy marker component.
@@ -139,7 +172,7 @@ impl Default for BaseSkeletonBundle {
 	}
 }
 
-/// Enemy bundle.
+/// Mage Skeleton bundle.
 #[derive(Bundle, LdtkEntity)]
 pub(crate) struct MageSkeletonBundle {
 	/// Enemy marker component.
@@ -176,6 +209,53 @@ impl Default for MageSkeletonBundle {
 			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
 			animation:           Enemy::MageSkeleton.idle_animation(),
+			vision:              Vision::new(4),
+			effects:             CurrentStatusEffects::default(),
+		}
+	}
+}
+
+/// Warrior skeleton bundle.
+#[derive(Bundle, LdtkEntity)]
+pub(crate) struct WarriorSkeletonBundle {
+	/// Enemy marker component.
+	enemy:               Enemy,
+	/// If this is a boss.
+	#[from_entity_instance]
+	boss:                Boss,
+	/// Health of the enemy.
+	#[from_entity_instance]
+	health:              Health,
+	/// Abilities the enemy can perform.
+	abilities:           Spellbook,
+	#[from_entity_instance]
+	/// A list of items this enemy drops on death.
+	drops:               Drops,
+	/// Sprite bundle.
+	#[sprite_sheet_bundle]
+	sprite_sheet_bundle: LdtkSpriteSheetBundle,
+	/// enemy grid coordinates.
+	#[grid_coords]
+	grid_coords:         GridCoords,
+	/// Animation.
+	animation:           Animation,
+	/// Which tiles the enemy can see.
+	vision:              Vision,
+	/// Active [`StatusEffects`].
+	effects:             CurrentStatusEffects,
+}
+
+impl Default for WarriorSkeletonBundle {
+	fn default() -> Self {
+		Self {
+			enemy:               Enemy::WarriorSkeleton,
+			boss:                Boss::default(),
+			health:              Health::default(),
+			abilities:           Spellbook::warrior_skeleton(),
+			drops:               Drops::default(),
+			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
+			grid_coords:         GridCoords::default(),
+			animation:           Enemy::WarriorSkeleton.idle_animation(),
 			vision:              Vision::new(4),
 			effects:             CurrentStatusEffects::default(),
 		}
@@ -265,7 +345,7 @@ pub(crate) fn move_enemies(
 		flip_sprite(*enemy_pos, *old_player_pos, &mut enemy_sprite);
 
 		let path = match enemy_type {
-			Enemy::BaseSkeleton => {
+			Enemy::BaseSkeleton | Enemy::WarriorSkeleton => {
 				if let Some((path, _)) = astar(
 					enemy_pos,
 					|grid_pos| {
@@ -468,96 +548,100 @@ pub(crate) fn move_enemies(
 
 		let mut destination = *path.get(1).expect("found empty path");
 
-		if let Enemy::BaseSkeleton = enemy_type {
-			let (ability_id, _) = enemy_spellbook
-				.abilities
-				.get_key_value(
-					&enemy_spellbook
-						.autoattack_melee
-						.expect("a melee enemy has to have a melee autoattack"),
-				)
-				.expect("there has to be a melee autoattack");
-
-			if old_player_pos == player_pos {
-				if destination == *player_pos {
-					cast_ability.send(AbilityEvent::new(
-						enemy_entity,
-						*ability_id,
-						AbilityEventTarget::Entity(player_entity),
-					));
-					return;
-				}
-
-				let path = WalkGrid::new(
-					IVec2::from(*enemy_pos).into(),
-					IVec2::from(*player_pos).into(),
-				)
-				.steps()
-				.map(|(start, end)| {
-					(
-						GridCoords::from(IVec2::from(start)),
-						GridCoords::from(IVec2::from(end)),
+		match enemy_type {
+			Enemy::BaseSkeleton | Enemy::WarriorSkeleton => {
+				let (ability_id, _) = enemy_spellbook
+					.abilities
+					.get_key_value(
+						&enemy_spellbook
+							.autoattack_melee
+							.expect("a melee enemy has to have a melee autoattack"),
 					)
-				});
+					.expect("there has to be a melee autoattack");
 
-				if let Some(ability_id) = enemy_spellbook.charge {
-					if enemy_spellbook
-						.abilities
-						.get(&ability_id)
-						.expect("abilityid has to exist")
-						.last_cast
-						.is_none()
-					{
-						for (start, end) in path.skip(1) {
-							if level_cache.walls.contains(&start)
-								|| level_cache.enemies.contains_key(&start)
-							{
-								break;
-							}
+				if old_player_pos == player_pos {
+					if destination == *player_pos {
+						cast_ability.send(AbilityEvent::new(
+							enemy_entity,
+							*ability_id,
+							AbilityEventTarget::Entity(player_entity),
+						));
+						return;
+					}
 
-							// reached last one
-							if end == *player_pos {
-								destination = start;
-								cast_ability.send(AbilityEvent::new(
-									enemy_entity,
-									ability_id,
-									AbilityEventTarget::Entity(player_entity),
-								));
+					let path = WalkGrid::new(
+						IVec2::from(*enemy_pos).into(),
+						IVec2::from(*player_pos).into(),
+					)
+					.steps()
+					.map(|(start, end)| {
+						(
+							GridCoords::from(IVec2::from(start)),
+							GridCoords::from(IVec2::from(end)),
+						)
+					});
 
-								let enemy = level_cache
-									.enemies
-									.remove(enemy_pos)
-									.expect("found no enemy at the moved position");
-								assert_eq!(
-									enemy, enemy_entity,
-									"wrong enemy found in level cache: searching for {:?} in {:?}",
-									enemy, level_cache.enemies
-								);
-								level_cache.enemies.insert(destination, enemy);
-								info!("inserted {enemy} in {destination:?}");
-								*turn_state = TurnState::EnemiesBusy;
+					if let Some(ability_id) = enemy_spellbook.charge {
+						if enemy_spellbook
+							.abilities
+							.get(&ability_id)
+							.expect("abilityid has to exist")
+							.last_cast
+							.is_none()
+						{
+							for (start, end) in path.skip(1) {
+								if level_cache.walls.contains(&start)
+									|| level_cache.enemies.contains_key(&start)
+								{
+									break;
+								}
 
-								return;
+								// reached last one
+								if end == *player_pos {
+									destination = start;
+									cast_ability.send(AbilityEvent::new(
+										enemy_entity,
+										ability_id,
+										AbilityEventTarget::Entity(player_entity),
+									));
+
+									let enemy = level_cache
+										.enemies
+										.remove(enemy_pos)
+										.expect("found no enemy at the moved position");
+									assert_eq!(
+										enemy, enemy_entity,
+										"wrong enemy found in level cache: searching for {:?} in \
+										 {:?}",
+										enemy, level_cache.enemies
+									);
+									level_cache.enemies.insert(destination, enemy);
+									info!("inserted {enemy} in {destination:?}");
+									*turn_state = TurnState::EnemiesBusy;
+
+									return;
+								}
 							}
 						}
 					}
-				}
 
-				if level_cache.enemies.contains_key(&destination) {
-					if let Some(autoattack_ranged) = &enemy_spellbook.autoattack_ranged {
-						if let Some((ability_id, _)) =
-							enemy_spellbook.abilities.get_key_value(autoattack_ranged)
-						{
-							cast_ability.send(AbilityEvent::new(
-								enemy_entity,
-								*ability_id,
-								AbilityEventTarget::Entity(player_entity),
-							));
+					if level_cache.enemies.contains_key(&destination) {
+						if let Some(autoattack_ranged) = &enemy_spellbook.autoattack_ranged {
+							if let Some((ability_id, _)) =
+								enemy_spellbook.abilities.get_key_value(autoattack_ranged)
+							{
+								cast_ability.send(AbilityEvent::new(
+									enemy_entity,
+									*ability_id,
+									AbilityEventTarget::Entity(player_entity),
+								));
+							}
+							return;
 						}
-						return;
 					}
 				}
 			}
+			_ => {}
 		}
 
 		if level_cache.enemies.contains_key(&destination) {

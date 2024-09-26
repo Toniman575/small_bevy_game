@@ -55,6 +55,7 @@ use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
 	SidePanel, Stroke, Widget,
 };
+use gameplay::WarriorSkeletonBundle;
 use line_drawing::WalkGrid;
 
 use self::fow::{generate_fov, update_memory, ApplyFoW};
@@ -646,6 +647,29 @@ fn fix_sprite_layout(
 				}
 
 				layout.textures.truncate(18);
+			}
+			#[expect(clippy::indexing_slicing)]
+			Enemy::WarriorSkeleton => {
+				for texture in layout
+					.textures
+					.get_mut(18..=23)
+					.expect("unexpected enemy skeleton sprite sheet size")
+					.iter_mut()
+				{
+					texture.max.y = 110;
+				}
+
+				layout.textures[19].max.x = 66;
+				layout.textures[20].min.x = 66;
+				layout.textures[20].max.x = 108;
+				layout.textures[21].min.x = 108;
+				layout.textures[21].max.x = 156;
+				layout.textures[22].min.x = 156;
+				layout.textures[22].max.x = 210;
+				layout.textures[23].min.x = 210;
+				layout.textures[23].max.x = 268;
+
+				layout.textures.truncate(24);
 			}
 		}
 	}
@@ -1423,6 +1447,7 @@ fn main() {
 		.register_ldtk_entity::<PotionBundle>("Potion")
 		.register_ldtk_entity::<BaseSkeletonBundle>("BaseSkeleton")
 		.register_ldtk_entity::<MageSkeletonBundle>("MageSkeleton")
+		.register_ldtk_entity::<WarriorSkeletonBundle>("WarriorSkeleton")
 		.register_ldtk_entity::<DoorBundle>("Door")
 		.register_ldtk_int_cell::<WallBundle>(1)
 		.register_type::<Door>()

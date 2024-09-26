@@ -28,10 +28,27 @@ pub(crate) fn generate_fov(
 			&mut |pos| {
 				#[expect(clippy::as_conversions, clippy::cast_possible_truncation)]
 				let (x, y) = (pos.0 as i32, pos.1 as i32);
+				let coord = GridCoords::new(x, y);
+				let mut wall = level_cache.walls.contains(&coord);
 
-				level_cache.walls.contains(&GridCoords::new(x, y))
-					|| u32::try_from(util::euclidean_distance(GridCoords::new(x, y), *origin))
-						.unwrap() > vision.range.into()
+				/*if wall {
+					let mut walls = 1;
+
+					for y in y..=y - 3 {
+						if level_cache.walls.contains(&GridCoords::new(x, y)) {
+							walls += 1;
+						} else {
+							break;
+						}
+					}
+
+					if walls <= 3 {
+						wall = false;
+					}
+				}*/
+
+				wall || u32::try_from(util::euclidean_distance(coord, *origin)).unwrap()
+					> vision.range.into()
 			},
 			&mut |pos| {
 				#[expect(clippy::as_conversions, clippy::cast_possible_truncation)]
