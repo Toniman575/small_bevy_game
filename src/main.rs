@@ -33,6 +33,7 @@ mod fow;
 mod gameplay;
 mod util;
 
+use std::cmp::Ordering;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 
@@ -60,9 +61,9 @@ use line_drawing::WalkGrid;
 
 use self::fow::{generate_fov, update_memory, ApplyFoW};
 use self::gameplay::{
-	cast_ability, death, door_interactions, handle_ability_event, move_enemies, player_movement,
-	select_ability, spawn_healthbar, tick_cooldowns, tick_status_effects, update_healthbar,
-	Abilities, AbilityEffect, AbilityEvent, ActiveAbility, BaseSkeletonBundle,
+	add_boss_abilities, cast_ability, death, door_interactions, handle_ability_event, move_enemies,
+	player_movement, select_ability, spawn_healthbar, tick_cooldowns, tick_status_effects,
+	update_healthbar, Abilities, AbilityEffect, AbilityEvent, ActiveAbility, BaseSkeletonBundle,
 	CurrentStatusEffects, DeathEvent, EffectType, Enemy, Health, MageSkeletonBundle, Player,
 	PlayerBundle, Spellbook, StatusEffect, Vision,
 };
@@ -314,7 +315,7 @@ impl LevelCache {
 	/// Checks if [`GridCoords`] is a wall or outside of the Level.
 	fn destination(
 		&self,
-		doors: &HashMap<EntityIid, bool>,
+		doors: &HashMap<EntityIid, DoorState>,
 		source: GridCoords,
 		destination: GridCoords,
 	) -> Destination {
@@ -325,12 +326,15 @@ impl LevelCache {
 				Destination::BeyondBoundary
 			}
 		} else if self.walls.contains(&destination) {
-			Destination::Wall
-		} else if let Some((_, iid, _)) = self.doors.get(&destination) {
-			if *doors.get(iid).unwrap() {
-				Destination::Walkable
+			if let Some((_, _, door)) = self.doors.get(&source) {
+				Destination::Door(door.clone())
 			} else {
 				Destination::Wall
+			}
+		} else if let Some((_, iid, _)) = self.doors.get(&destination) {
+			match doors.get(iid).unwrap() {
+				DoorState::Closed => Destination::Wall,
+				DoorState::Opened | DoorState::Passed => Destination::Walkable,
 			}
 		} else if self.enemies.contains_key(&destination) {
 			Destination::Enemy
@@ -423,6 +427,7 @@ fn startup(
 	let auto_attack_icon_id = contexts.add_image(auto_attack_icon);
 	let arrow_icon = asset_server.load("arrow_icon.webp");
 	let arrow_icon_id = contexts.add_image(arrow_icon);
+	let fire = asset_server.load::<Image>("fire.png");
 
 	let textures = Textures {
 		props,
@@ -432,6 +437,7 @@ fn startup(
 		slash_animation_atlas,
 		auto_attack_icon_id,
 		arrow_icon_id,
+		fire,
 	};
 
 	commands.insert_resource(Abilities::new(&textures));
@@ -455,6 +461,8 @@ struct Textures {
 	auto_attack_icon_id:   TextureId,
 	/// EGUI texture handle to the arrow icon.
 	arrow_icon_id:         TextureId,
+	/// Fire texture,
+	fire:                  Handle<Image>,
 }
 
 /// Icons stored as textures.
@@ -555,16 +563,16 @@ fn level_spawn(
 	for (entity, grid_coords, iid, door) in &mut doors {
 		doors_map.insert(*grid_coords, (entity, iid.clone(), door.clone()));
 
-		let open = match state.doors.entry(iid.clone()) {
+		let door_state = match state.doors.entry(iid.clone()) {
 			Entry::Occupied(value) => *value.get(),
-			Entry::Vacant(entry) => *entry.insert(false),
+			Entry::Vacant(entry) => *entry.insert(DoorState::Closed),
 		};
 
-		if open {
+		if let DoorState::Opened = door_state {
 			commands.trigger_targets(DoorOpen, entity);
 		}
 
-		state.doors.entry(door.entity.clone()).or_insert(open);
+		state.doors.entry(door.entity.clone()).or_insert(door_state);
 	}
 
 	// ... so we can update the [`LevelCache`] resource.
@@ -615,7 +623,7 @@ fn fix_sprite_layout(
 			.expect("texture atlas layout not found for enemy");
 
 		match enemy {
-			Enemy::BaseSkeleton => {
+			Enemy::Base => {
 				for texture in layout
 					.textures
 					.get_mut(16..=23)
@@ -627,7 +635,7 @@ fn fix_sprite_layout(
 
 				layout.textures.truncate(24);
 			}
-			Enemy::MageSkeleton => {
+			Enemy::Mage => {
 				for texture in layout
 					.textures
 					.get_mut(6..=11)
@@ -649,7 +657,7 @@ fn fix_sprite_layout(
 				layout.textures.truncate(18);
 			}
 			#[expect(clippy::indexing_slicing)]
-			Enemy::WarriorSkeleton => {
+			Enemy::Warrior => {
 				for texture in layout
 					.textures
 					.get_mut(18..=23)
@@ -694,7 +702,7 @@ fn door_trigger(
 #[reflect(Resource)]
 struct GameState {
 	/// State of each door.
-	doors:         HashMap<EntityIid, bool>,
+	doors:         HashMap<EntityIid, DoorState>,
 	/// State of each object.
 	objects:       HashMap<ItemSource, HashMap<Object, bool>>,
 	/// Current enemy order.
@@ -703,6 +711,13 @@ struct GameState {
 	player_items:  HashMap<Object, u8>,
 	/// Tiles already seen by the player.
 	visited_tiles: HashMap<LevelIid, HashSet<GridCoords>>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Reflect)]
+enum DoorState {
+	Closed,
+	Opened,
+	Passed,
 }
 
 #[derive(Component, Default, Reflect, Resource, PartialEq, Eq)]
@@ -852,7 +867,7 @@ fn update_target_marker(
 		let enemy = level_cache.enemies.get(marker_grid_coords.deref());
 
 		match &ability.effect {
-			AbilityEffect::Damage(_) => {
+			AbilityEffect::Damage(_) | AbilityEffect::Slam(_) => {
 				if let Some(entity) = enemy {
 					let valid =
 						if ability.in_euclidean_range(*player_grid_coords, *marker_grid_coords) {
@@ -1051,13 +1066,51 @@ fn item_ui(
 			ui.with_layout(Layout::top_down(Align::Max), |ui| {
 				for (item, count) in &state.player_items {
 					if *count > 0 {
+						let (old_count, contracting) = ui.memory_mut(|memory| {
+							let (old_count, contracting) = memory
+								.data
+								.get_temp_mut_or_default::<(u8, bool)>(Id::new(item));
+							let previous_count = *old_count;
+							*old_count = *count;
+
+							if previous_count != *count {
+								*contracting = false;
+							}
+
+							(previous_count, *contracting)
+						});
+
+						if old_count != *count {
+							context.clear_animations();
+							context.animate_value_with_time(Id::new(item), 1., 1.);
+						}
+
+						let scale = if contracting {
+							context.animate_value_with_time(Id::new(item), 1.0, 0.15)
+						} else {
+							let mut scale =
+								context.animate_value_with_time(Id::new(item), 1.25, 0.15);
+
+							if let Ordering::Equal = scale.total_cmp(&1.25) {
+								ui.memory_mut(|memory| {
+									memory
+										.data
+										.get_temp_mut_or_default::<(u8, bool)>(Id::new(item))
+										.1 = true;
+								});
+								scale = context.animate_value_with_time(Id::new(item), 1.0, 0.25);
+							}
+
+							scale
+						};
+
 						Frame::default()
 							.fill(Color32::BLACK)
-							.stroke(Stroke::new(2., Color32::WHITE))
+							.stroke(Stroke::new(2. * scale, Color32::WHITE))
 							.rounding(5.)
 							.show(ui, |ui| {
 								let (response, painter) = ui.allocate_painter(
-									egui::Vec2::new(64., 64.),
+									egui::Vec2::new(64., 64.) * scale,
 									Sense {
 										click:     false,
 										drag:      false,
@@ -1076,22 +1129,24 @@ fn item_ui(
 
 								// Text shadow.
 								painter.text(
-									(response.rect.right_top() - Pos2::new(4., -4.)).to_pos2(),
+									(response.rect.right_top() - Pos2::new(4., -4.) * scale)
+										.to_pos2(),
 									Align2::RIGHT_TOP,
 									&text,
 									FontId {
-										size: 24.,
+										size: 24. * scale,
 										..FontId::default()
 									},
 									Color32::BLACK,
 								);
 
 								painter.text(
-									(response.rect.right_top() - Pos2::new(2., -2.)).to_pos2(),
+									(response.rect.right_top() - Pos2::new(2., -2.) * scale)
+										.to_pos2(),
 									Align2::RIGHT_TOP,
 									text,
 									FontId {
-										size: 24.,
+										size: 24. * scale,
 										..FontId::default()
 									},
 									Color32::WHITE,
@@ -1397,16 +1452,21 @@ fn main() {
 			Update,
 			(
 				player_movement,
-				move_enemies.run_if(|debug: Res<'_, TurnState>| {
-					matches!(debug.deref(), TurnState::EnemiesWaiting)
-				}),
 				select_ability,
 				spawn_healthbar,
 				update_memory,
 				(door_interactions, cast_ability).run_if(|debug: Res<'_, TurnState>| {
 					matches!(debug.deref(), TurnState::PlayerWaiting)
 				}),
-				(handle_ability_event, update_healthbar, death).chain(),
+				(
+					move_enemies.run_if(|debug: Res<'_, TurnState>| {
+						matches!(debug.deref(), TurnState::EnemiesWaiting)
+					}),
+					handle_ability_event,
+					update_healthbar,
+					death,
+				)
+					.chain(),
 				(update_cursor_pos, update_target_marker).chain(),
 			)
 				.run_if(|debug: Res<'_, Debug>| matches!(debug.deref(), Debug::Inactive)),
@@ -1425,6 +1485,7 @@ fn main() {
 					camera_update,
 				)
 					.chain(),
+				add_boss_abilities,
 			),
 		)
 		.insert_resource(Debug::Inactive)

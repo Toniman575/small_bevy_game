@@ -5,6 +5,7 @@ use std::ops::Deref;
 use bevy::color::palettes::css::*;
 use bevy::prelude::*;
 use bevy_ecs_ldtk::{GridCoords, LevelSelection};
+use bevy_ecs_tilemap::map::TilemapSize;
 use bevy_ecs_tilemap::tiles::{TileColor, TileVisible};
 
 use crate::gameplay::{Enemy, Player, Vision};
@@ -15,10 +16,15 @@ use crate::{util, Debug, Door, GameState, LevelCache, Object, Turn};
 pub(crate) fn generate_fov(
 	mut commands: Commands<'_, '_>,
 	mut origin_q: Query<'_, '_, (&mut Vision, &GridCoords, Has<Player>), Changed<GridCoords>>,
+	tile_map_size: Query<'_, '_, &TilemapSize>,
 	level_cache: ResMut<'_, LevelCache>,
 	mut game_state: ResMut<'_, GameState>,
 	current_level: Res<'_, LevelSelection>,
 ) {
+	let Some(tile_map_size) = tile_map_size.iter().next() else {
+		return;
+	};
+
 	for (mut vision, origin, has_player) in &mut origin_q {
 		let mut visible_tiles = vec![*origin];
 
@@ -29,33 +35,30 @@ pub(crate) fn generate_fov(
 				#[expect(clippy::as_conversions, clippy::cast_possible_truncation)]
 				let (x, y) = (pos.0 as i32, pos.1 as i32);
 				let coord = GridCoords::new(x, y);
-				let mut wall = level_cache.walls.contains(&coord);
 
-				/*if wall {
-					let mut walls = 1;
-
-					for y in y..=y - 3 {
-						if level_cache.walls.contains(&GridCoords::new(x, y)) {
-							walls += 1;
-						} else {
-							break;
-						}
-					}
-
-					if walls <= 3 {
-						wall = false;
-					}
-				}*/
-
-				wall || u32::try_from(util::euclidean_distance(coord, *origin)).unwrap()
-					> vision.range.into()
+				level_cache.walls.contains(&coord)
+					|| u32::try_from(util::euclidean_distance(coord, *origin)).unwrap()
+						> vision.range.into()
 			},
 			&mut |pos| {
 				#[expect(clippy::as_conversions, clippy::cast_possible_truncation)]
 				let (x, y) = (pos.0 as i32, pos.1 as i32);
+				let coord = GridCoords::new(x, y);
 
-				if !visible_tiles.contains(&GridCoords::new(x, y)) {
-					visible_tiles.push(GridCoords::new(x, y));
+				visible_tiles.push(coord);
+
+				if level_cache.walls.contains(&coord) || level_cache.doors.contains_key(&coord) {
+					for y in
+						coord.y + 1..i32::min(coord.y + 3, i32::try_from(tile_map_size.y).unwrap())
+					{
+						let coord = GridCoords::new(coord.x, y);
+
+						if level_cache.walls.contains(&coord) {
+							visible_tiles.push(coord);
+						} else {
+							break;
+						}
+					}
 				}
 			},
 		);

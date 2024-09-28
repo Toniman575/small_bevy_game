@@ -15,6 +15,8 @@ use bevy_tweening::{Animator, EaseMethod, Tween};
 use line_drawing::WalkGrid;
 use pathfinding::prelude::*;
 
+use super::AbilityId;
+use super::SpellbookAbility;
 use super::{
 	Abilities, AbilityEvent, AbilityEventTarget, CurrentStatusEffects, Health, Memory, Player,
 	Spellbook, Vision,
@@ -27,18 +29,18 @@ use crate::{Destination, Drops, GameState, LevelCache, TurnState, GRID_SIZE};
 #[derive(Clone, Component, Copy, PartialEq, Eq)]
 pub(crate) enum Enemy {
 	/// Basic skeleton.
-	BaseSkeleton,
+	Base,
 	/// Skeleton caster.
-	MageSkeleton,
+	Mage,
 	/// Skeleton warrior
-	WarriorSkeleton,
+	Warrior,
 }
 
 impl Enemy {
 	/// Return idle [`Animation`].
 	pub(crate) fn idle_animation(self) -> Animation {
 		match self {
-			Self::BaseSkeleton | Self::MageSkeleton | Self::WarriorSkeleton => Animation {
+			Self::Base | Self::Mage | Self::Warrior => Animation {
 				timer:     Timer::from_seconds(0.25, TimerMode::Repeating),
 				first:     0,
 				last:      3,
@@ -51,14 +53,14 @@ impl Enemy {
 	/// Return walking [`Animation`].
 	pub(crate) fn walking_animation(self) -> Animation {
 		match self {
-			Self::BaseSkeleton => Animation {
+			Self::Base => Animation {
 				timer:     Timer::from_seconds(0.1, TimerMode::Repeating),
 				first:     8,
 				last:      13,
 				repeating: true,
 				anchor:    None,
 			},
-			Self::MageSkeleton => Animation {
+			Self::Mage => Animation {
 				timer:     Timer::from_seconds(0.1, TimerMode::Repeating),
 				first:     6,
 				last:      11,
@@ -68,7 +70,7 @@ impl Enemy {
 					-(1. / 33. * ((33. - 32.) / 2.)),
 				))),
 			},
-			Self::WarriorSkeleton => Animation {
+			Self::Warrior => Animation {
 				timer:     Timer::from_seconds(0.1, TimerMode::Repeating),
 				first:     9,
 				last:      14,
@@ -81,7 +83,7 @@ impl Enemy {
 	/// Return death [`Animation`].
 	pub(crate) fn death_animation(self) -> Animation {
 		match self {
-			Self::BaseSkeleton => Animation {
+			Self::Base => Animation {
 				timer:     Timer::from_seconds(0.125, TimerMode::Repeating),
 				first:     16,
 				last:      23,
@@ -91,7 +93,7 @@ impl Enemy {
 					-(1. / 48. * ((48. - 32.) / 2.)),
 				))),
 			},
-			Self::MageSkeleton => Animation {
+			Self::Mage => Animation {
 				timer:     Timer::from_seconds(0.125, TimerMode::Repeating),
 				first:     12,
 				last:      17,
@@ -101,7 +103,7 @@ impl Enemy {
 					-(1. / 56. * ((56. - 32.) / 2.)),
 				))),
 			},
-			Self::WarriorSkeleton => Animation {
+			Self::Warrior => Animation {
 				timer:     Timer::from_seconds(0.125, TimerMode::Repeating),
 				first:     18,
 				last:      23,
@@ -159,13 +161,13 @@ pub(crate) struct BaseSkeletonBundle {
 impl Default for BaseSkeletonBundle {
 	fn default() -> Self {
 		Self {
-			enemy:               Enemy::BaseSkeleton,
+			enemy:               Enemy::Base,
 			health:              Health::default(),
 			abilities:           Spellbook::base_skeleton(),
 			drops:               Drops::default(),
 			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
-			animation:           Enemy::BaseSkeleton.idle_animation(),
+			animation:           Enemy::Base.idle_animation(),
 			vision:              Vision::new(4),
 			effects:             CurrentStatusEffects::default(),
 		}
@@ -177,6 +179,9 @@ impl Default for BaseSkeletonBundle {
 pub(crate) struct MageSkeletonBundle {
 	/// Enemy marker component.
 	enemy:               Enemy,
+	/// If this is a boss.
+	#[from_entity_instance]
+	boss:                Boss,
 	/// Health of the enemy.
 	#[from_entity_instance]
 	health:              Health,
@@ -202,13 +207,14 @@ pub(crate) struct MageSkeletonBundle {
 impl Default for MageSkeletonBundle {
 	fn default() -> Self {
 		Self {
-			enemy:               Enemy::MageSkeleton,
+			enemy:               Enemy::Mage,
+			boss:                Boss::default(),
 			health:              Health::default(),
 			abilities:           Spellbook::mage_skeleton(),
 			drops:               Drops::default(),
 			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
-			animation:           Enemy::MageSkeleton.idle_animation(),
+			animation:           Enemy::Mage.idle_animation(),
 			vision:              Vision::new(4),
 			effects:             CurrentStatusEffects::default(),
 		}
@@ -248,14 +254,14 @@ pub(crate) struct WarriorSkeletonBundle {
 impl Default for WarriorSkeletonBundle {
 	fn default() -> Self {
 		Self {
-			enemy:               Enemy::WarriorSkeleton,
+			enemy:               Enemy::Warrior,
 			boss:                Boss::default(),
 			health:              Health::default(),
 			abilities:           Spellbook::warrior_skeleton(),
 			drops:               Drops::default(),
 			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
 			grid_coords:         GridCoords::default(),
-			animation:           Enemy::WarriorSkeleton.idle_animation(),
+			animation:           Enemy::Warrior.idle_animation(),
 			vision:              Vision::new(4),
 			effects:             CurrentStatusEffects::default(),
 		}
@@ -345,7 +351,7 @@ pub(crate) fn move_enemies(
 		flip_sprite(*enemy_pos, *old_player_pos, &mut enemy_sprite);
 
 		let path = match enemy_type {
-			Enemy::BaseSkeleton | Enemy::WarriorSkeleton => {
+			Enemy::Base | Enemy::Warrior => {
 				if let Some((path, _)) = astar(
 					enemy_pos,
 					|grid_pos| {
@@ -381,7 +387,7 @@ pub(crate) fn move_enemies(
 					continue;
 				}
 			}
-			Enemy::MageSkeleton => {
+			Enemy::Mage => {
 				let ability_id = enemy_spellbook.autoattack_ranged.expect(
 					"mage skeleton has to have a ranged autoattack
 				",
@@ -549,7 +555,7 @@ pub(crate) fn move_enemies(
 		let mut destination = *path.get(1).expect("found empty path");
 
 		match enemy_type {
-			Enemy::BaseSkeleton | Enemy::WarriorSkeleton => {
+			Enemy::Base | Enemy::Warrior => {
 				let (ability_id, _) = enemy_spellbook
 					.abilities
 					.get_key_value(
@@ -569,19 +575,19 @@ pub(crate) fn move_enemies(
 						return;
 					}
 
-					let path = WalkGrid::new(
-						IVec2::from(*enemy_pos).into(),
-						IVec2::from(*player_pos).into(),
-					)
-					.steps()
-					.map(|(start, end)| {
-						(
-							GridCoords::from(IVec2::from(start)),
-							GridCoords::from(IVec2::from(end)),
-						)
-					});
-
 					if let Some(ability_id) = enemy_spellbook.charge {
+						let path = WalkGrid::new(
+							IVec2::from(*enemy_pos).into(),
+							IVec2::from(*player_pos).into(),
+						)
+						.steps()
+						.map(|(start, end)| {
+							(
+								GridCoords::from(IVec2::from(start)),
+								GridCoords::from(IVec2::from(end)),
+							)
+						});
+
 						if enemy_spellbook
 							.abilities
 							.get(&ability_id)
@@ -616,7 +622,6 @@ pub(crate) fn move_enemies(
 										enemy, level_cache.enemies
 									);
 									level_cache.enemies.insert(destination, enemy);
-									info!("inserted {enemy} in {destination:?}");
 									*turn_state = TurnState::EnemiesBusy;
 
 									return;
@@ -690,4 +695,21 @@ pub(crate) fn move_enemies(
 		.iter_mut()
 		.for_each(|(_, ready)| *ready = true);
 	*turn_state = TurnState::PlayerWaiting;
+}
+
+/// When enemies spawn that are bosses we add any additional spells they might have.
+pub(crate) fn add_boss_abilities(mut added_q: Query<'_, '_, (&Enemy, &Boss, &mut Spellbook), Added<Boss>>) {
+	for (enemy, boss, mut spellbook) in &mut added_q {
+		if boss.0 {
+			match enemy {
+				Enemy::Mage => {
+					spellbook.teleport = Some(AbilityId(4));
+					spellbook.abilities.insert(AbilityId(4), SpellbookAbility{
+						last_cast: None
+					});
+				},
+				_ => {},
+			}
+		}
+	}
 }

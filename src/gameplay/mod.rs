@@ -20,7 +20,8 @@ use line_drawing::WalkGrid;
 
 pub(crate) use self::abilities::Abilities;
 pub(crate) use self::enemy::{
-	move_enemies, BaseSkeletonBundle, Boss, Enemy, MageSkeletonBundle, WarriorSkeletonBundle,
+	add_boss_abilities, move_enemies, BaseSkeletonBundle, Boss, Enemy, MageSkeletonBundle,
+	WarriorSkeletonBundle,
 };
 pub(crate) use self::player::{
 	cast_ability, door_interactions, player_movement, select_ability, Player, PlayerBundle,
@@ -142,6 +143,8 @@ pub(crate) enum AbilityEffect {
 	Teleport,
 	/// Charge.
 	Charge(u16),
+	/// Slam(Target movement)
+	Slam(u16),
 }
 
 /// Holds animation data.
@@ -323,6 +326,7 @@ impl Spellbook {
 			abilities:         HashMap::from_iter([
 				(AbilityId(0), SpellbookAbility::default()),
 				(AbilityId(1), SpellbookAbility::default()),
+				(AbilityId(14), SpellbookAbility::default()),
 			]),
 		}
 	}
@@ -404,6 +408,7 @@ pub(crate) fn handle_ability_event(
 	>,
 	mut ability_events: EventReader<'_, '_, AbilityEvent>,
 	mut animation_state: ResMut<'_, TurnState>,
+	mut level_cache: ResMut<'_, LevelCache>,
 ) {
 	let mut turn = turn.single_mut();
 
@@ -437,7 +442,7 @@ pub(crate) fn handle_ability_event(
 			continue;
 		}
 
-		let (target_entity, power) = match ability.effect.clone() {
+		let (target_entity, mut power) = match ability.effect.clone() {
 			AbilityEffect::Damage(power) => {
 				let AbilityEventTarget::Entity(entity) = ability_event.target else {
 					unreachable!("sent wrong event target")
@@ -527,7 +532,7 @@ pub(crate) fn handle_ability_event(
 					}
 				}
 			}
-			AbilityEffect::Charge(power) => {
+			AbilityEffect::Charge(power) | AbilityEffect::Slam(power) => {
 				let AbilityEventTarget::Entity(entity) = ability_event.target else {
 					unreachable!("sent wrong event target")
 				};
@@ -637,6 +642,88 @@ pub(crate) fn handle_ability_event(
 					.with_completed_event(0),
 				),
 			));
+
+			if let AbilityEffect::Slam(slam_power) = &ability.effect {
+				let grid_vec = *target_grid_coord - *caster_grid_coord;
+				let grid_coords = grid_vec * GridCoords::new(4, 4);
+				let potential_destination = *target_grid_coord + grid_coords;
+
+				let path = WalkGrid::new(
+					IVec2::from(*target_grid_coord).into(),
+					IVec2::from(potential_destination).into(),
+				)
+				.map(|pos| GridCoords::from(IVec2::from(pos)));
+
+				let mut slams_into = false;
+
+				let mut destination = *target_grid_coord;
+				let mut slammed_entity = None;
+
+				for pos in path.skip(1) {
+					// reached last one
+					if pos == potential_destination {
+						destination = pos;
+						break;
+					}
+
+					if level_cache.walls.contains(&pos) || level_cache.enemies.contains_key(&pos) {
+						slams_into = true;
+						if let Some(entity) = level_cache.enemies.get(&pos) {
+							slammed_entity = Some(entity);
+						}
+						break;
+					}
+
+					destination = pos;
+				}
+
+				if slams_into {
+					power = *slam_power;
+				} else {
+					power = slam_power / 3;
+				}
+
+				let mut power_modifier = 1.;
+
+				for effect in &target_status_effect.0 {
+					if effect.effect_type == EffectType::DefensiveBuff {
+						power_modifier -= effect.power;
+					} else if effect.effect_type == EffectType::DefensiveDebuff {
+						power_modifier += effect.power;
+					}
+				}
+
+				if 0 != target_health
+					.current
+					.saturating_sub((f32::from(power) * power_modifier) as u16)
+				{
+					let target =
+						utils::grid_coords_to_translation(destination, IVec2::splat(GRID_SIZE))
+							.extend(target_transform.translation.z);
+					commands.entity(target_entity).insert(Animator::new(
+						Tween::new(
+							EaseMethod::Linear,
+							Duration::from_secs_f64(0.2),
+							TransformPositionLens {
+								start: target_transform.translation,
+								end:   target,
+							},
+						)
+						.with_completed_event(slammed_entity.map_or(0, |entity| entity.to_bits())),
+					));
+
+					let target = level_cache
+						.enemies
+						.remove(&*target_grid_coord)
+						.expect("found no enemy at the moved position");
+					assert_eq!(
+						target, target_entity,
+						"wrong enemy found in level cache: searching for {:?} in {:?}",
+						target, level_cache.enemies
+					);
+					level_cache.enemies.insert(destination, target);
+				}
+			}
 		}
 
 		let to_enemy =
@@ -879,7 +966,7 @@ pub(crate) fn death(
 			&mut Transform,
 			&mut TextureAtlas,
 			&mut Animation,
-			&mut Drops,
+			Option<&mut Drops>,
 			Option<&Enemy>,
 			Option<&Boss>,
 			Has<Player>,
@@ -887,8 +974,10 @@ pub(crate) fn death(
 	>,
 	tile_map_size: Query<'_, '_, &TilemapSize>,
 	layers: Query<'_, '_, (Entity, &LayerMetadata)>,
+	ldtk_projects: Query<'_, '_, Entity, With<Handle<LdtkProject>>>,
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut game_state: ResMut<'_, GameState>,
+	mut turn_state: ResMut<'_, TurnState>,
 ) {
 	let Ok((player_vision, mut player_spellbook)) = player_q.get_single_mut() else {
 		return;
@@ -908,7 +997,7 @@ pub(crate) fn death(
 			mut transform,
 			mut atlas,
 			mut animation,
-			mut drops,
+			drops,
 			enemy,
 			boss,
 			player,
@@ -918,7 +1007,14 @@ pub(crate) fn death(
 			game_state.enemies.retain(|(enemy, _)| *enemy != entity);
 			enemy.death_animation()
 		} else if player {
-			unimplemented!()
+			commands.entity(ldtk_projects.single()).insert(Respawn);
+			game_state.doors.clear();
+			game_state.enemies.clear();
+			game_state.objects.clear();
+			game_state.player_items.clear();
+			game_state.visited_tiles.clear();
+			*turn_state = TurnState::PlayerWaiting;
+			return;
 		} else {
 			unreachable!("player can't be enemy and visa versa")
 		};
@@ -936,6 +1032,7 @@ pub(crate) fn death(
 			.expect("Enemy should be in level cache.");
 
 		for object in drops
+			.unwrap()
 			.0
 			.drain(..)
 			.map(|drop| Object::from_str(&drop).unwrap())
@@ -1012,7 +1109,7 @@ pub(crate) fn death(
 				.entity(
 					layers
 						.iter()
-						.find(|(_, layer)| layer.iid == "95801fc0-25d0-11ef-8498-6b3d2275a196")
+						.find(|(_, layer)| layer.identifier == "Objects")
 						.unwrap()
 						.0,
 				)
@@ -1034,20 +1131,22 @@ pub(crate) fn death(
 			if let Some(boss) = boss {
 				if boss.0 {
 					match enemy {
-						Enemy::WarriorSkeleton => {
+						Enemy::Warrior => {
 							player_spellbook.charge = Some(AbilityId(13));
 							assert!(player_spellbook
 								.abilities
 								.insert(AbilityId(13), SpellbookAbility { last_cast: None })
 								.is_none());
 						}
-						Enemy::MageSkeleton => {
+						Enemy::Mage => {
 							assert!(player_spellbook
 								.abilities
-								.insert(AbilityId(3), SpellbookAbility { last_cast: None })
+								.insert(AbilityId(4), SpellbookAbility { last_cast: None })
 								.is_none());
 						}
-						_ => {}
+						_ => {
+							unimplemented!()
+						}
 					}
 				}
 			}

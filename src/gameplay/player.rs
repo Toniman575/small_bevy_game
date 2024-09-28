@@ -21,8 +21,8 @@ use super::{
 };
 use crate::animation::Animation;
 use crate::{
-	Destination, DoorOpen, GameState, LevelCache, Object, PlayerBusy, PlayerEntityDestination,
-	TargetingMarker, Turn, TurnState, GRID_SIZE,
+	Destination, DoorOpen, DoorState, GameState, LevelCache, Object, PlayerBusy,
+	PlayerEntityDestination, TargetingMarker, Turn, TurnState, GRID_SIZE,
 };
 
 /// Player marker component.
@@ -106,7 +106,7 @@ impl PlayerBundle {
 	clippy::type_complexity
 )]
 pub(crate) fn player_movement(
-	state: ResMut<'_, GameState>,
+	mut state: ResMut<'_, GameState>,
 	mut turn_q: Query<'_, '_, &mut Turn>,
 	mut commands: Commands<'_, '_>,
 	mut inputs: EventReader<'_, '_, KeyboardInput>,
@@ -206,6 +206,7 @@ pub(crate) fn player_movement(
 			Destination::Door(door) => {
 				if let LevelSelection::Iid(current_level) = level_selection.as_mut() {
 					*current_level = door.level;
+					*state.doors.get_mut(&door.entity).unwrap() = DoorState::Passed;
 					destination_entity.0 = Some(door.entity);
 				} else {
 					unreachable!("levels should only be `LevelIid`")
@@ -258,18 +259,18 @@ pub(crate) fn door_interactions(
 					..
 				} = state.deref_mut();
 
-				let open = doors.get_mut(iid).unwrap();
+				let door_state = doors.get_mut(iid).unwrap();
 
 				let keys = player_items.entry(Object::Key).or_insert(0);
 
-				if !*open && *keys > 0 {
+				if *door_state == DoorState::Closed && *keys > 0 {
 					let mut turn = turn_q.single_mut();
 					turn.set_if_neq(Turn(turn.0 + 1));
 					*animation_state = TurnState::EnemiesWaiting;
 
-					*open = true;
+					*door_state = DoorState::Opened;
 					*keys -= 1;
-					*state.doors.get_mut(&door.entity).unwrap() = true;
+					*state.doors.get_mut(&door.entity).unwrap() = DoorState::Opened;
 					commands.trigger_targets(DoorOpen, *entity);
 				}
 			}
