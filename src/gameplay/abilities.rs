@@ -55,7 +55,7 @@ impl Abilities {
 					None,
 					AbilityEffect::Damage(10),
 					Some(3),
-					None,
+					Some(TextureIcon::Slash),
 					Some(super::AbilityAnimation {
 						texture:  textures.slash_animation.clone(),
 						duration: Duration::from_secs_f64(0.25),
@@ -85,7 +85,12 @@ impl Abilities {
 					AbilityEffect::Teleport,
 					Some(15),
 					None,
-					None,
+					Some(super::AbilityAnimation {
+						texture:  textures.teleport_animation.clone(),
+						duration: Duration::from_secs_f64(0.25),
+						scale:    0.5,
+						atlas:    Some((textures.teleport_animation_atlas.clone(), 6)),
+					}),
 				),
 			),
 			(
@@ -222,8 +227,13 @@ impl Abilities {
 					None,
 					AbilityEffect::Charge(5),
 					Some(5),
-					None,
-					None,
+					Some(TextureIcon::Charge),
+					Some(super::AbilityAnimation {
+						texture:  textures.charge_animation.clone(),
+						duration: Duration::from_secs_f64(0.25),
+						scale:    0.5,
+						atlas:    Some((textures.charge_animation_atlas.clone(), 6)),
+					}),
 				),
 			),
 			(
@@ -235,7 +245,12 @@ impl Abilities {
 					AbilityEffect::Slam(15),
 					Some(6),
 					None,
-					None,
+					Some(super::AbilityAnimation {
+						texture:  textures.shield_bash_animation.clone(),
+						duration: Duration::from_secs_f64(0.25),
+						scale:    0.5,
+						atlas:    Some((textures.shield_bash_animation_atlas.clone(), 6)),
+					}),
 				),
 			),
 		]))

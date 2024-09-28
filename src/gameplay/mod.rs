@@ -787,8 +787,6 @@ pub(crate) fn handle_ability_event(
 						),
 					));
 				}
-			} else {
-				unimplemented!()
 			}
 		}
 
@@ -1141,7 +1139,7 @@ pub(crate) fn death(
 						Enemy::Mage => {
 							assert!(player_spellbook
 								.abilities
-								.insert(AbilityId(4), SpellbookAbility { last_cast: None })
+								.insert(AbilityId(2), SpellbookAbility { last_cast: None })
 								.is_none());
 						}
 						_ => {

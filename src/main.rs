@@ -415,7 +415,8 @@ fn startup(
 	let props = asset_server.load("Environment/Dungeon Prison/Assets/Props.png");
 	let props_id = contexts.add_image(props.clone_weak());
 	let arrow = asset_server.load::<Image>("arrow.webp");
-	let slash_animation = asset_server.load::<Image>("slash.webp");
+	let fire = asset_server.load("fire.png");
+	let slash_animation = asset_server.load::<Image>("slash_animation.png");
 	let slash_animation_atlas = asset_server.add(TextureAtlasLayout::from_grid(
 		UVec2::splat(64),
 		7,
@@ -423,21 +424,57 @@ fn startup(
 		None,
 		None,
 	));
+	let charge_animation = asset_server.load::<Image>("charge_animation.png");
+	let charge_animation_atlas = asset_server.add(TextureAtlasLayout::from_grid(
+		UVec2::splat(64),
+		7,
+		1,
+		None,
+		None,
+	));
+	let shield_bash_animation = asset_server.load::<Image>("shield_bash_animation.png");
+	let shield_bash_animation_atlas = asset_server.add(TextureAtlasLayout::from_grid(
+		UVec2::splat(64),
+		7,
+		1,
+		None,
+		None,
+	));
+	let teleport_animation = asset_server.load::<Image>("teleport_animation.png");
+	let teleport_animation_atlas = asset_server.add(TextureAtlasLayout::from_grid(
+		UVec2::splat(64),
+		7,
+		1,
+		None,
+		None,
+	));
+
 	let auto_attack_icon = asset_server.load("auto_attack.webp");
 	let auto_attack_icon_id = contexts.add_image(auto_attack_icon);
 	let arrow_icon = asset_server.load("arrow_icon.webp");
 	let arrow_icon_id = contexts.add_image(arrow_icon);
-	let fire = asset_server.load::<Image>("fire.png");
+	let charge_icon = asset_server.load("charge_icon.png");
+	let charge_icon_id = contexts.add_image(charge_icon);
+	let slash_icon = asset_server.load("slash_icon.png");
+	let slash_icon_id = contexts.add_image(slash_icon);
 
 	let textures = Textures {
 		props,
 		props_id,
 		arrow,
+		fire,
 		slash_animation,
 		slash_animation_atlas,
+		charge_animation,
+		charge_animation_atlas,
+		shield_bash_animation,
+		shield_bash_animation_atlas,
+		teleport_animation,
+		teleport_animation_atlas,
 		auto_attack_icon_id,
 		arrow_icon_id,
-		fire,
+		charge_icon_id,
+		slash_icon_id,
 	};
 
 	commands.insert_resource(Abilities::new(&textures));
@@ -448,21 +485,37 @@ fn startup(
 #[derive(Resource)]
 struct Textures {
 	/// Dungeon tileset props.
-	props:                 Handle<Image>,
+	props:                       Handle<Image>,
 	/// EGUI texture handle to the dungeon tileset props.
-	props_id:              TextureId,
+	props_id:                    TextureId,
 	/// Arrow texture.
-	arrow:                 Handle<Image>,
-	/// Slash animation attack texture.
-	slash_animation:       Handle<Image>,
-	/// Slash animation texture atlas layout.
-	slash_animation_atlas: Handle<TextureAtlasLayout>,
-	/// EGUI texture handle to the auto-attack icon.
-	auto_attack_icon_id:   TextureId,
-	/// EGUI texture handle to the arrow icon.
-	arrow_icon_id:         TextureId,
+	arrow:                       Handle<Image>,
 	/// Fire texture,
-	fire:                  Handle<Image>,
+	fire:                        Handle<Image>,
+	/// Slash animation attack texture.
+	slash_animation:             Handle<Image>,
+	/// Slash animation texture atlas layout.
+	slash_animation_atlas:       Handle<TextureAtlasLayout>,
+	/// Charge animation attack texture.
+	charge_animation:            Handle<Image>,
+	/// Charge animation texture atlas layout.
+	charge_animation_atlas:      Handle<TextureAtlasLayout>,
+	/// Shield bash animation attack texture.
+	shield_bash_animation:       Handle<Image>,
+	/// Shield bash animation texture atlas layout.
+	shield_bash_animation_atlas: Handle<TextureAtlasLayout>,
+	/// Teleport animation attack texture.
+	teleport_animation:          Handle<Image>,
+	/// Teleport animation texture atlas layout.
+	teleport_animation_atlas:    Handle<TextureAtlasLayout>,
+	/// EGUI texture handle to the auto-attack icon.
+	auto_attack_icon_id:         TextureId,
+	/// EGUI texture handle to the arrow icon.
+	arrow_icon_id:               TextureId,
+	/// EGUI texture handle to the charge icon.
+	charge_icon_id:              TextureId,
+	/// EGUI texture handle to the slash icon.
+	slash_icon_id:               TextureId,
 }
 
 /// Icons stored as textures.
@@ -472,6 +525,10 @@ enum TextureIcon {
 	AutoAttack,
 	/// Arrow ability icon.
 	Arrow,
+	/// Charge ability icon.
+	Charge,
+	/// Slash ability icon.
+	Slash,
 }
 
 /// Initialize states after level is spawned.
@@ -713,10 +770,14 @@ struct GameState {
 	visited_tiles: HashMap<LevelIid, HashSet<GridCoords>>,
 }
 
+/// State of a door.
 #[derive(Clone, Copy, Eq, PartialEq, Reflect)]
 enum DoorState {
+	/// Closed.
 	Closed,
+	/// Opened.
 	Opened,
+	/// Door has been used.
 	Passed,
 }
 
@@ -1259,6 +1320,8 @@ fn ability_ui(
 									match icon {
 										TextureIcon::AutoAttack => textures.auto_attack_icon_id,
 										TextureIcon::Arrow => textures.arrow_icon_id,
+										TextureIcon::Charge => textures.charge_icon_id,
+										TextureIcon::Slash => textures.slash_icon_id,
 									},
 									response.rect,
 									egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.)),
