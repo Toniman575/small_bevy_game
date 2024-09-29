@@ -56,7 +56,7 @@ use egui::{
 	Align, Align2, Area, Color32, FontId, Frame, Id, Label, Layout, Pos2, RichText, Sense,
 	SidePanel, Stroke, Widget,
 };
-use gameplay::WarriorSkeletonBundle;
+use gameplay::{change_enemy_gridcoords, Dead, WarriorSkeletonBundle};
 use line_drawing::WalkGrid;
 
 use self::fow::{generate_fov, update_memory, ApplyFoW};
@@ -292,8 +292,6 @@ struct LevelCache {
 	walls:   HashSet<GridCoords>,
 	/// The cashed doors of this level.
 	doors:   HashMap<GridCoords, (Entity, EntityIid, Door)>,
-	/// The cashed enemies of this level.
-	enemies: HashMap<GridCoords, Entity>,
 	/// The cashed objects of this level.
 	objects: HashMap<GridCoords, (Entity, Object, ItemSource)>,
 	/// The level width in tiles.
@@ -318,6 +316,7 @@ impl LevelCache {
 		doors: &HashMap<EntityIid, DoorState>,
 		source: GridCoords,
 		destination: GridCoords,
+		enemies: &Vec<GridCoords>,
 	) -> Destination {
 		if self.outside_boundary(destination) {
 			if let Some((_, _, door)) = self.doors.get(&source) {
@@ -336,7 +335,7 @@ impl LevelCache {
 				DoorState::Closed => Destination::Wall,
 				DoorState::Opened | DoorState::Passed => Destination::Walkable,
 			}
-		} else if self.enemies.contains_key(&destination) {
+		} else if enemies.contains(&destination) {
 			Destination::Enemy
 		} else {
 			Destination::Walkable
@@ -635,7 +634,6 @@ fn level_spawn(
 	// ... so we can update the [`LevelCache`] resource.
 	*level_cache = LevelCache {
 		walls:   walls.iter().copied().collect(),
-		enemies: enemies_map,
 		objects: objects_map,
 		doors:   doors_map,
 		width:   level.px_wid / GRID_SIZE,
@@ -883,10 +881,20 @@ fn update_cursor_pos(
 }
 
 /// Updates the `TargetingMarker` with updated `CursorPos`.
-#[expect(clippy::needless_pass_by_value, clippy::too_many_lines)]
+#[expect(
+	clippy::needless_pass_by_value,
+	clippy::too_many_lines,
+	clippy::type_complexity
+)]
 fn update_target_marker(
 	cursor_pos: Res<'_, CursorPos>,
-	player: Query<'_, '_, (Entity, &GridCoords, &Health, &ActiveAbility, &Vision), With<Player>>,
+	player: Query<
+		'_,
+		'_,
+		(Entity, &GridCoords, &Health, &ActiveAbility, &Vision),
+		(With<Player>, Without<Enemy>),
+	>,
+	enemies: Query<'_, '_, (Entity, &GridCoords), (With<Enemy>, Without<Player>, Without<Dead>)>,
 	mut target_marker: Query<
 		'_,
 		'_,
@@ -896,7 +904,7 @@ fn update_target_marker(
 			&mut GridCoords,
 			&mut Sprite,
 		),
-		Without<Player>,
+		(Without<Player>, Without<Enemy>),
 	>,
 	level_cache: Res<'_, LevelCache>,
 	abilites: Res<'_, Abilities>,
@@ -925,7 +933,15 @@ fn update_target_marker(
 			.0
 			.get(&active_ability.0)
 			.expect("Player has to have an active ability.");
-		let enemy = level_cache.enemies.get(marker_grid_coords.deref());
+
+		let mut enemy = None;
+
+		for (entity, enemy_grid_coords) in &enemies {
+			if *enemy_grid_coords == *marker_grid_coords {
+				enemy = Some(entity);
+				break;
+			}
+		}
 
 		match &ability.effect {
 			AbilityEffect::Damage(_) | AbilityEffect::Slam(_) => {
@@ -940,7 +956,7 @@ fn update_target_marker(
 						};
 
 					marker.set_if_neq(TargetingMarker {
-						entity: Some(*entity),
+						entity: Some(entity),
 						valid,
 					});
 				} else {
@@ -1014,7 +1030,7 @@ fn update_target_marker(
 						};
 
 						marker.set_if_neq(TargetingMarker {
-							entity: Some(*entity),
+							entity: Some(entity),
 							valid,
 						});
 					} else {
@@ -1039,11 +1055,11 @@ fn update_target_marker(
 					for pos in path {
 						// reached last one
 						if pos == *marker_grid_coords {
-							continue;
+							break;
 						}
 
 						if level_cache.walls.contains(&pos)
-							|| level_cache.enemies.contains_key(&pos)
+							|| enemies.iter().any(|(_, grid_coords)| *grid_coords == pos)
 						{
 							valid = false;
 							break;
@@ -1057,7 +1073,7 @@ fn update_target_marker(
 					};
 
 					marker.set_if_neq(TargetingMarker {
-						entity: Some(*entity),
+						entity: Some(entity),
 						valid,
 					});
 				} else {
@@ -1295,9 +1311,15 @@ fn ability_ui(
 					let (text, text_color) = if let Some(cooldown_left) =
 						spellbook_ability.cooldown_left(ability, turn_q.single().0)
 					{
-						(&format!("{} ({cooldown_left})", ability.name), Color32::RED)
+						if ability.icon.is_some() {
+						(&format!("{cooldown_left}"), Color32::RED)
 					} else {
+						(&format!("{} ({cooldown_left})", ability.name), Color32::RED)
+					}
+					} else if ability.icon.is_none() {
 						(&ability.name, Color32::WHITE)
+					} else {
+						(&String::new(), Color32::WHITE)
 					};
 
 					let response = Frame::default()
@@ -1327,30 +1349,30 @@ fn ability_ui(
 									egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.)),
 									Color32::WHITE,
 								);
-							} else {
-								// Text shadow.
-								painter.text(
-									(response.rect.right_top() - Pos2::new(4., -4.)).to_pos2(),
-									Align2::RIGHT_TOP,
-									text,
-									FontId {
-										size: 12.,
-										..FontId::default()
-									},
-									Color32::BLACK,
-								);
-
-								painter.text(
-									(response.rect.right_top() - Pos2::new(2., -2.)).to_pos2(),
-									Align2::RIGHT_TOP,
-									text,
-									FontId {
-										size: 12.,
-										..FontId::default()
-									},
-									text_color,
-								);
 							}
+							
+							// Text shadow.
+							painter.text(
+								(response.rect.right_top() - Pos2::new(4., -4.)).to_pos2(),
+								Align2::RIGHT_TOP,
+								text,
+								FontId {
+									size: 12.,
+									..FontId::default()
+								},
+								Color32::BLACK,
+							);
+
+							painter.text(
+								(response.rect.right_top() - Pos2::new(2., -2.)).to_pos2(),
+								Align2::RIGHT_TOP,
+								text,
+								FontId {
+									size: 12.,
+									..FontId::default()
+								},
+								text_color,
+							);
 
 							// Text shadow.
 							painter.text(
@@ -1518,6 +1540,7 @@ fn main() {
 				select_ability,
 				spawn_healthbar,
 				update_memory,
+				change_enemy_gridcoords,
 				(door_interactions, cast_ability).run_if(|debug: Res<'_, TurnState>| {
 					matches!(debug.deref(), TurnState::PlayerWaiting)
 				}),

@@ -118,7 +118,7 @@ pub(crate) fn finish_animation(
 
 		if completed.user_data != 0 {
 			let mut health = health_q.get_mut(Entity::from_bits(completed.user_data)).expect("sent entity doesn't exist");
-			health.current = health.current.saturating_sub(15);
+			health.current = health.current.saturating_sub(20);
 		}
 
 		if is_ability_animation {

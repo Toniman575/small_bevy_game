@@ -15,9 +15,10 @@ use bevy_ecs_tilemap::tiles::TilePos;
 use bevy_tweening::lens::TransformPositionLens;
 use bevy_tweening::{Animator, EaseMethod, Tween};
 
+use super::Dead;
 use super::{
 	Abilities, AbilityEffect, AbilityEvent, AbilityEventTarget, ActiveAbility,
-	CurrentStatusEffects, EffectType, Health, Spellbook, Vision,
+	CurrentStatusEffects, EffectType, Enemy, Health, Spellbook, Vision,
 };
 use crate::animation::Animation;
 use crate::{
@@ -123,6 +124,7 @@ pub(crate) fn player_movement(
 		),
 		With<Player>,
 	>,
+	enemies: Query<'_, '_, &GridCoords, (With<Enemy>, Without<Player>, Without<Dead>)>,
 	level_cache: Res<'_, LevelCache>,
 	mut level_selection: ResMut<'_, LevelSelection>,
 	mut destination_entity: ResMut<'_, PlayerEntityDestination>,
@@ -173,7 +175,7 @@ pub(crate) fn player_movement(
 			player.single_mut();
 		let destination = *grid_pos + direction;
 
-		match level_cache.destination(&state.doors, *grid_pos, destination) {
+		match level_cache.destination(&state.doors, *grid_pos, destination, &enemies.iter().copied().collect()) {
 			Destination::Walkable => {
 				turn.set_if_neq(Turn(turn.0 + 1));
 				*animation_state = TurnState::PlayerBusy(PlayerBusy::Moving);

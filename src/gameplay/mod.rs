@@ -10,7 +10,7 @@ use std::time::Duration;
 use bevy::color::palettes::css::RED;
 use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
-use bevy::utils::{HashMap, HashSet};
+use bevy::utils::hashbrown::{HashMap, HashSet};
 use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
 use bevy_ecs_tilemap::map::TilemapSize;
@@ -20,7 +20,7 @@ use line_drawing::WalkGrid;
 
 pub(crate) use self::abilities::Abilities;
 pub(crate) use self::enemy::{
-	add_boss_abilities, move_enemies, BaseSkeletonBundle, Boss, Enemy, MageSkeletonBundle,
+	add_boss_abilities, change_enemy_gridcoords, move_enemies, BaseSkeletonBundle, Boss, Enemy, MageSkeletonBundle,
 	WarriorSkeletonBundle,
 };
 pub(crate) use self::player::{
@@ -32,6 +32,10 @@ use crate::{
 	util, Drops, GameState, ItemSource, LevelCache, Object, PlayerBusy, TextureIcon, Textures,
 	Turn, TurnState, GRID_SIZE,
 };
+
+/// Component for tracking dead things.
+#[derive(Clone, Component, Debug, Default, Reflect, PartialEq, Eq, Copy)]
+pub(crate) struct Dead;
 
 /// Component for tracking health in entities.
 #[derive(Clone, Component, Debug, Default, Reflect, PartialEq, Eq, Copy)]
@@ -327,6 +331,7 @@ impl Spellbook {
 				(AbilityId(0), SpellbookAbility::default()),
 				(AbilityId(1), SpellbookAbility::default()),
 				(AbilityId(14), SpellbookAbility::default()),
+				(AbilityId(15), SpellbookAbility::default()),
 			]),
 		}
 	}
@@ -405,10 +410,11 @@ pub(crate) fn handle_ability_event(
 			Has<Player>,
 			Has<Enemy>,
 		),
+		Without<Dead>
 	>,
 	mut ability_events: EventReader<'_, '_, AbilityEvent>,
 	mut animation_state: ResMut<'_, TurnState>,
-	mut level_cache: ResMut<'_, LevelCache>,
+	level_cache: ResMut<'_, LevelCache>,
 ) {
 	let mut turn = turn.single_mut();
 
@@ -541,6 +547,14 @@ pub(crate) fn handle_ability_event(
 			}
 		};
 
+		let mut all_enemies = HashMap::new();
+
+		for (entity, _, grid_coord, _, _, _, _, _, _, is_enemy) in &entities_q {
+			if is_enemy {
+				all_enemies.insert(*grid_coord, entity);
+			}
+		}
+
 		let [(
 			caster_entity,
 			caster_transform,
@@ -666,9 +680,9 @@ pub(crate) fn handle_ability_event(
 						break;
 					}
 
-					if level_cache.walls.contains(&pos) || level_cache.enemies.contains_key(&pos) {
+					if level_cache.walls.contains(&pos) || all_enemies.contains_key(&pos) {
 						slams_into = true;
-						if let Some(entity) = level_cache.enemies.get(&pos) {
+						if let Some(entity) = all_enemies.get(&pos) {
 							slammed_entity = Some(entity);
 						}
 						break;
@@ -680,7 +694,7 @@ pub(crate) fn handle_ability_event(
 				if slams_into {
 					power = *slam_power;
 				} else {
-					power = slam_power / 3;
+					power = slam_power / 4;
 				}
 
 				let mut power_modifier = 1.;
@@ -711,17 +725,6 @@ pub(crate) fn handle_ability_event(
 						)
 						.with_completed_event(slammed_entity.map_or(0, |entity| entity.to_bits())),
 					));
-
-					let target = level_cache
-						.enemies
-						.remove(&*target_grid_coord)
-						.expect("found no enemy at the moved position");
-					assert_eq!(
-						target, target_entity,
-						"wrong enemy found in level cache: searching for {:?} in {:?}",
-						target, level_cache.enemies
-					);
-					level_cache.enemies.insert(destination, target);
 				}
 			}
 		}
@@ -1022,12 +1025,10 @@ pub(crate) fn death(
 		*animation = death_animation;
 		atlas.index = animation.first;
 
+		commands.entity(event.0).insert(Dead);
+
 		let mut entity_commands = commands.entity(event.0);
 		entity_commands.despawn_descendants();
-		level_cache
-			.enemies
-			.remove(grid_coords)
-			.expect("Enemy should be in level cache.");
 
 		for object in drops
 			.unwrap()

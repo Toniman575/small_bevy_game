@@ -24,7 +24,7 @@ impl Abilities {
 					String::from("Stab"),
 					1,
 					None,
-					AbilityEffect::Damage(5),
+					AbilityEffect::Damage(10),
 					None,
 					Some(TextureIcon::AutoAttack),
 					None,
@@ -53,8 +53,8 @@ impl Abilities {
 					String::from("Hardcore"),
 					1,
 					None,
-					AbilityEffect::Damage(10),
-					Some(3),
+					AbilityEffect::Damage(15),
+					Some(5),
 					Some(TextureIcon::Slash),
 					Some(super::AbilityAnimation {
 						texture:  textures.slash_animation.clone(),
@@ -83,7 +83,7 @@ impl Abilities {
 					5,
 					Some(0),
 					AbilityEffect::Teleport,
-					Some(15),
+					Some(10),
 					None,
 					Some(super::AbilityAnimation {
 						texture:  textures.teleport_animation.clone(),
@@ -223,10 +223,10 @@ impl Abilities {
 				AbilityId(13),
 				Ability::new(
 					String::from("Charge"),
-					3,
+					4,
 					None,
-					AbilityEffect::Charge(5),
-					Some(5),
+					AbilityEffect::Charge(10),
+					Some(6),
 					Some(TextureIcon::Charge),
 					Some(super::AbilityAnimation {
 						texture:  textures.charge_animation.clone(),
@@ -242,7 +242,7 @@ impl Abilities {
 					String::from("Shield Slam"),
 					1,
 					None,
-					AbilityEffect::Slam(15),
+					AbilityEffect::Slam(20),
 					Some(6),
 					None,
 					Some(super::AbilityAnimation {
@@ -251,6 +251,30 @@ impl Abilities {
 						scale:    0.5,
 						atlas:    Some((textures.shield_bash_animation_atlas.clone(), 6)),
 					}),
+				),
+			),
+			(
+				AbilityId(15),
+				Ability::new(
+					String::from("Cheat"),
+					50,
+					None,
+					AbilityEffect::Damage(200),
+					None,
+					None,
+					None,
+				),
+			),
+			(
+				AbilityId(10),
+				Ability::new(
+					String::from("Skeleton Slash"),
+					1,
+					None,
+					AbilityEffect::Damage(8),
+					None,
+					None,
+					None,
 				),
 			),
 		]))

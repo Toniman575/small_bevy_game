@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
+use bevy::utils::hashbrown::HashMap;
 use bevy::utils::HashSet;
 use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
@@ -15,11 +16,10 @@ use bevy_tweening::{Animator, EaseMethod, Tween};
 use line_drawing::WalkGrid;
 use pathfinding::prelude::*;
 
-use super::AbilityId;
-use super::SpellbookAbility;
+use super::Dead;
 use super::{
-	Abilities, AbilityEvent, AbilityEventTarget, CurrentStatusEffects, Health, Memory, Player,
-	Spellbook, Vision,
+	Abilities, AbilityEvent, AbilityEventTarget, AbilityId, CurrentStatusEffects, Health, Memory,
+	Player, Spellbook, SpellbookAbility, Vision,
 };
 use crate::animation::Animation;
 use crate::util::{self, flip_sprite, OrderedNeighbors};
@@ -280,7 +280,7 @@ pub(crate) fn move_enemies(
 	mut commands: Commands<'_, '_>,
 	abilities: Res<'_, Abilities>,
 	mut game_state: ResMut<'_, GameState>,
-	mut level_cache: ResMut<'_, LevelCache>,
+	level_cache: ResMut<'_, LevelCache>,
 	mut turn_state: ResMut<'_, TurnState>,
 	tile_map_size: Query<'_, '_, &TilemapSize>,
 	player: Query<'_, '_, (Entity, &GridCoords, &Vision), (Without<Enemy>, With<Player>)>,
@@ -299,11 +299,19 @@ pub(crate) fn move_enemies(
 			&mut Visibility,
 			&mut Vision,
 		),
-		Without<Player>,
+		(Without<Player>, Without<Dead>)
 	>,
 	mut cast_ability: EventWriter<'_, AbilityEvent>,
 ) {
 	let GameState { enemies, doors, .. } = game_state.deref_mut();
+
+	let mut all_enemies = HashMap::new();
+
+	for (entity, _, grid_coord, ..) in &world_enemies {
+		all_enemies.insert(*grid_coord, entity);
+	}
+
+	let all_enemy_pos: Vec<GridCoords> = all_enemies.keys().copied().collect();
 
 	for (enemy, ready) in enemies.iter_mut().filter(|(_, ready)| *ready) {
 		*ready = false;
@@ -357,8 +365,12 @@ pub(crate) fn move_enemies(
 					|grid_pos| {
 						OrderedNeighbors::new((*grid_pos).into(), *tile_map_size)
 							.filter_map(|pos| {
-								let walkable =
-									level_cache.destination(doors, *enemy_pos, pos.into());
+								let walkable = level_cache.destination(
+									doors,
+									*enemy_pos,
+									pos.into(),
+									&all_enemy_pos,
+								);
 								matches!(walkable, Destination::Walkable).then_some((pos.into(), 1))
 							})
 							.collect::<Vec<_>>()
@@ -372,8 +384,12 @@ pub(crate) fn move_enemies(
 					|grid_pos| {
 						OrderedNeighbors::new((*grid_pos).into(), *tile_map_size)
 							.filter_map(|pos| {
-								let walkable =
-									level_cache.destination(doors, *enemy_pos, pos.into());
+								let walkable = level_cache.destination(
+									doors,
+									*enemy_pos,
+									pos.into(),
+									&all_enemy_pos,
+								);
 								matches!(walkable, Destination::Walkable | Destination::Enemy)
 									.then_some((pos.into(), 1))
 							})
@@ -435,8 +451,12 @@ pub(crate) fn move_enemies(
 							for (next, _) in
 								OrderedNeighbors::new(TilePos::from(current), *tile_map_size)
 									.filter_map(|pos| {
-										let walkable =
-											level_cache.destination(doors, *enemy_pos, pos.into());
+										let walkable = level_cache.destination(
+											doors,
+											*enemy_pos,
+											pos.into(),
+											&all_enemy_pos,
+										);
 										(matches!(walkable, Destination::Walkable)
 											&& pos != TilePos::from(*player_pos))
 										.then_some((pos, 1))
@@ -473,16 +493,6 @@ pub(crate) fn move_enemies(
 								ability_id,
 								AbilityEventTarget::Tile(furthest),
 							));
-							let enemy = level_cache
-								.enemies
-								.remove(enemy_pos)
-								.expect("found no enemy at the moved position");
-							assert_eq!(
-								enemy, enemy_entity,
-								"wrong enemy found in level cache: searching for {:?} in {:?}",
-								enemy_pos, level_cache.enemies
-							);
-							level_cache.enemies.insert(furthest, enemy);
 
 							return;
 						}
@@ -514,7 +524,7 @@ pub(crate) fn move_enemies(
 
 						// Ensure the move stays within the grid boundaries
 						if let Destination::Walkable =
-							level_cache.destination(doors, *enemy_pos, new_pos)
+							level_cache.destination(doors, *enemy_pos, new_pos, &all_enemy_pos)
 						{
 							// Calculate the distance from the player to the new position
 							let dist = util::euclidean_distance(new_pos, *player_pos);
@@ -536,8 +546,12 @@ pub(crate) fn move_enemies(
 					|grid_pos| {
 						OrderedNeighbors::new((*grid_pos).into(), *tile_map_size)
 							.filter_map(|pos| {
-								let walkable =
-									level_cache.destination(doors, *enemy_pos, pos.into());
+								let walkable = level_cache.destination(
+									doors,
+									*enemy_pos,
+									pos.into(),
+									&all_enemy_pos,
+								);
 								matches!(walkable, Destination::Walkable).then_some((pos.into(), 1))
 							})
 							.collect::<Vec<_>>()
@@ -597,7 +611,7 @@ pub(crate) fn move_enemies(
 						{
 							for (start, end) in path.skip(1) {
 								if level_cache.walls.contains(&start)
-									|| level_cache.enemies.contains_key(&start)
+									|| all_enemies.contains_key(&start)
 								{
 									break;
 								}
@@ -611,17 +625,6 @@ pub(crate) fn move_enemies(
 										AbilityEventTarget::Entity(player_entity),
 									));
 
-									let enemy = level_cache
-										.enemies
-										.remove(enemy_pos)
-										.expect("found no enemy at the moved position");
-									assert_eq!(
-										enemy, enemy_entity,
-										"wrong enemy found in level cache: searching for {:?} in \
-										 {:?}",
-										enemy, level_cache.enemies
-									);
-									level_cache.enemies.insert(destination, enemy);
 									*turn_state = TurnState::EnemiesBusy;
 
 									return;
@@ -630,7 +633,7 @@ pub(crate) fn move_enemies(
 						}
 					}
 
-					if level_cache.enemies.contains_key(&destination) {
+					if all_enemies.contains_key(&destination) {
 						if let Some(autoattack_ranged) = &enemy_spellbook.autoattack_ranged {
 							if let Some((ability_id, _)) =
 								enemy_spellbook.abilities.get_key_value(autoattack_ranged)
@@ -649,7 +652,7 @@ pub(crate) fn move_enemies(
 			_ => {}
 		}
 
-		if level_cache.enemies.contains_key(&destination) {
+		if all_enemies.contains_key(&destination) {
 			continue;
 		}
 
@@ -675,17 +678,6 @@ pub(crate) fn move_enemies(
 		*enemy_animation = enemy_type.walking_animation();
 		enemy_atlas.index = enemy_animation.first;
 
-		let enemy = level_cache
-			.enemies
-			.remove(enemy_pos)
-			.expect("found no enemy at the moved position");
-		assert_eq!(
-			enemy, enemy_entity,
-			"wrong enemy found in level cache: searching for {:?} in {:?}",
-			enemy, level_cache.enemies
-		);
-		level_cache.enemies.insert(destination, enemy);
-
 		*turn_state = TurnState::EnemiesBusy;
 		return;
 	}
@@ -698,18 +690,32 @@ pub(crate) fn move_enemies(
 }
 
 /// When enemies spawn that are bosses we add any additional spells they might have.
-pub(crate) fn add_boss_abilities(mut added_q: Query<'_, '_, (&Enemy, &Boss, &mut Spellbook), Added<Boss>>) {
+pub(crate) fn add_boss_abilities(
+	mut added_q: Query<'_, '_, (&Enemy, &Boss, &mut Spellbook), Added<Boss>>,
+) {
 	for (enemy, boss, mut spellbook) in &mut added_q {
 		if boss.0 {
 			match enemy {
 				Enemy::Mage => {
 					spellbook.teleport = Some(AbilityId(4));
-					spellbook.abilities.insert(AbilityId(4), SpellbookAbility{
-						last_cast: None
-					});
-				},
-				_ => {},
+					spellbook
+						.abilities
+						.insert(AbilityId(4), SpellbookAbility { last_cast: None });
+				}
+				_ => {}
 			}
 		}
+	}
+}
+
+/// When enemies change transform we updat their gridcoords.
+pub(crate) fn change_enemy_gridcoords(
+	mut changed_q: Query<'_, '_, (&mut GridCoords, &Transform), (Changed<Transform>, With<Enemy>)>,
+) {
+	for (mut grid_coords, transform) in &mut changed_q {
+		grid_coords.set_if_neq(utils::translation_to_grid_coords(
+			transform.translation.truncate(),
+			IVec2::new(GRID_SIZE, GRID_SIZE),
+		));
 	}
 }
