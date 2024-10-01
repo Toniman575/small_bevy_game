@@ -1,4 +1,5 @@
 //! TODO:
+//! - Just rewrite the whole code really.
 //! - Abilities
 //!   - Implement tooltip.
 //!   - Add resources for abilities.
@@ -18,6 +19,9 @@
 //! Bugs:
 //! - Sometimes levels are not despawned correctly, leading to false walls and doors being cached.
 //! - Fully loaded levels, before cleanup, can sometimes be seen for a single frame.
+//! - When an enemy dies on an already picked up object it becomes visible.
+//! - Charge animation is buggy.
+//! - On the last Level z is not correct.
 
 #![allow(
 	clippy::allow_attributes_without_reason,
