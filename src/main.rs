@@ -2,11 +2,9 @@
 //! - Abilities
 //!   - Implement tooltip.
 //!   - Add resources for abilities.
-//!   - Make enemies use new abilities. Probably with a simple state machine.
 //! - Debuffs
 //!   - Debuff Presentation.
 //! - Bonus
-//!   - Add displacing abilities.
 //!   - Delete `LevelCache`.
 //!   - Let players speed up turns (turn off animations, speed them up etc.).
 //!   - Better horde behavior.

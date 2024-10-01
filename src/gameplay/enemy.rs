@@ -515,8 +515,10 @@ pub(crate) fn move_enemies(
 											pos.into(),
 											&all_enemy_pos,
 										);
-										(matches!(walkable, Destination::Walkable | Destination::Enemy)
-											&& pos != TilePos::from(*player_pos))
+										(matches!(
+											walkable,
+											Destination::Walkable | Destination::Enemy
+										) && pos != TilePos::from(*player_pos))
 										.then_some((pos, 1))
 									}) {
 								if util::euclidean_distance(next.into(), *enemy_pos)
@@ -685,7 +687,7 @@ pub(crate) fn move_enemies(
 
 									*turn_state = TurnState::EnemiesBusy;
 
-									return;
+									break;
 								}
 							}
 						}

@@ -6,8 +6,7 @@ use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_ldtk::utils;
 use bevy_tweening::{Animator, TweenCompleted};
 
-use crate::gameplay::Health;
-use crate::gameplay::{Enemy, Player, PlayerBundle, Vision};
+use crate::gameplay::{Enemy, Health, Player, PlayerBundle, Vision};
 use crate::{GameState, LevelCache, TurnState, GRID_SIZE};
 
 /// Animated sprite.
@@ -117,7 +116,9 @@ pub(crate) fn finish_animation(
 		) = query.get_mut(completed.entity).unwrap();
 
 		if completed.user_data != 0 {
-			let mut health = health_q.get_mut(Entity::from_bits(completed.user_data)).expect("sent entity doesn't exist");
+			let mut health = health_q
+				.get_mut(Entity::from_bits(completed.user_data))
+				.expect("sent entity doesn't exist");
 			health.current = health.current.saturating_sub(20);
 		}
 

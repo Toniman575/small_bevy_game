@@ -726,17 +726,17 @@ pub(crate) fn handle_ability_event(
 				let mut slammed_entity = None;
 
 				for pos in path.skip(1) {
-					// reached last one
-					if pos == potential_destination {
-						destination = pos;
-						break;
-					}
-
 					if level_cache.walls.contains(&pos) || all_enemies.contains_key(&pos) {
 						slams_into = true;
 						if let Some(entity) = all_enemies.get(&pos) {
 							slammed_entity = Some(entity);
 						}
+						break;
+					}
+
+					// reached last one
+					if pos == potential_destination {
+						destination = pos;
 						break;
 					}
 
@@ -766,6 +766,7 @@ pub(crate) fn handle_ability_event(
 					let target =
 						utils::grid_coords_to_translation(destination, IVec2::splat(GRID_SIZE))
 							.extend(target_transform.translation.z);
+
 					commands.entity(target_entity).insert(Animator::new(
 						Tween::new(
 							EaseMethod::Linear,
