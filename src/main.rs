@@ -64,8 +64,8 @@ use self::gameplay::{
 	add_boss_abilities, cast_ability, death, door_interactions, handle_ability_event, move_enemies,
 	player_movement, select_ability, spawn_healthbar, tick_cooldowns, tick_status_effects,
 	update_healthbar, Abilities, AbilityEffect, AbilityEvent, ActiveAbility, BaseSkeletonBundle,
-	CurrentStatusEffects, DeathEvent, EffectType, Enemy, Health, MageSkeletonBundle, Player,
-	PlayerBundle, Spellbook, StatusEffect, Vision,
+	CurrentStatusEffects, DeathEvent, EffectType, Enemy, Health, MageSkeletonBundle,
+	NecromancerEnemyBundle, Player, PlayerBundle, Spellbook, StatusEffect, Vision,
 };
 
 /// The size of the Grid in pixels.
@@ -316,17 +316,23 @@ impl LevelCache {
 		doors: &HashMap<EntityIid, DoorState>,
 		source: GridCoords,
 		destination: GridCoords,
-		enemies: &Vec<GridCoords>,
+		enemies: &[GridCoords],
 	) -> Destination {
 		if self.outside_boundary(destination) {
-			if let Some((_, _, door)) = self.doors.get(&source) {
-				Destination::Door(door.clone())
+			if let Some((_, iid, door)) = self.doors.get(&source) {
+				match doors.get(iid).unwrap() {
+					DoorState::Closed | DoorState::Passed => Destination::Wall,
+					DoorState::Opened => Destination::Door(door.clone()),
+				}
 			} else {
 				Destination::BeyondBoundary
 			}
 		} else if self.walls.contains(&destination) {
-			if let Some((_, _, door)) = self.doors.get(&source) {
-				Destination::Door(door.clone())
+			if let Some((_, iid, door)) = self.doors.get(&source) {
+				match doors.get(iid).unwrap() {
+					DoorState::Closed | DoorState::Passed => Destination::Wall,
+					DoorState::Opened => Destination::Door(door.clone()),
+				}
 			} else {
 				Destination::Wall
 			}
@@ -624,7 +630,7 @@ fn level_spawn(
 			Entry::Vacant(entry) => *entry.insert(DoorState::Closed),
 		};
 
-		if let DoorState::Opened = door_state {
+		if let DoorState::Opened | DoorState::Passed = door_state {
 			commands.trigger_targets(DoorOpen, entity);
 		}
 
@@ -731,6 +737,39 @@ fn fix_sprite_layout(
 				layout.textures[22].max.x = 210;
 				layout.textures[23].min.x = 210;
 				layout.textures[23].max.x = 268;
+
+				layout.textures.truncate(24);
+			}
+			#[expect(clippy::indexing_slicing)]
+			Enemy::Necromancer => {
+				for texture in layout
+					.textures
+					.get_mut(9..=14)
+					.expect("unexpected enemy skeleton sprite sheet size")
+					.iter_mut()
+				{
+					texture.max.y = 67;
+				}
+
+				for texture in layout
+					.textures
+					.get_mut(18..=23)
+					.expect("unexpected enemy skeleton sprite sheet size")
+					.iter_mut()
+				{
+					texture.min.y = 67;
+					texture.max.y = 99;
+				}
+
+				layout.textures[19].max.x = 65;
+				layout.textures[20].min.x = 65;
+				layout.textures[20].max.x = 111;
+				layout.textures[21].min.x = 111;
+				layout.textures[21].max.x = 162;
+				layout.textures[22].min.x = 162;
+				layout.textures[22].max.x = 213;
+				layout.textures[23].min.x = 213;
+				layout.textures[23].max.x = 264;
 
 				layout.textures.truncate(24);
 			}
@@ -1312,10 +1351,10 @@ fn ability_ui(
 						spellbook_ability.cooldown_left(ability, turn_q.single().0)
 					{
 						if ability.icon.is_some() {
-						(&format!("{cooldown_left}"), Color32::RED)
-					} else {
-						(&format!("{} ({cooldown_left})", ability.name), Color32::RED)
-					}
+							(&format!("{cooldown_left}"), Color32::RED)
+						} else {
+							(&format!("{} ({cooldown_left})", ability.name), Color32::RED)
+						}
 					} else if ability.icon.is_none() {
 						(&ability.name, Color32::WHITE)
 					} else {
@@ -1350,7 +1389,7 @@ fn ability_ui(
 									Color32::WHITE,
 								);
 							}
-							
+
 							// Text shadow.
 							painter.text(
 								(response.rect.right_top() - Pos2::new(4., -4.)).to_pos2(),
@@ -1595,6 +1634,7 @@ fn main() {
 		.register_ldtk_entity::<BaseSkeletonBundle>("BaseSkeleton")
 		.register_ldtk_entity::<MageSkeletonBundle>("MageSkeleton")
 		.register_ldtk_entity::<WarriorSkeletonBundle>("WarriorSkeleton")
+		.register_ldtk_entity::<NecromancerEnemyBundle>("Necromancer")
 		.register_ldtk_entity::<DoorBundle>("Door")
 		.register_ldtk_int_cell::<WallBundle>(1)
 		.register_type::<Door>()
@@ -1607,6 +1647,8 @@ fn main() {
 		.register_type::<TurnState>()
 		.register_type::<Spellbook>()
 		.register_type::<Turn>()
+		.register_type::<Vision>()
+		.register_type::<Enemy>()
 		.observe(door_trigger)
 		.observe(fow::apply_fow)
 		.observe(animation::arrived_at_tile)

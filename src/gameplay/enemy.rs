@@ -16,31 +16,32 @@ use bevy_tweening::{Animator, EaseMethod, Tween};
 use line_drawing::WalkGrid;
 use pathfinding::prelude::*;
 
-use super::Dead;
 use super::{
-	Abilities, AbilityEvent, AbilityEventTarget, AbilityId, CurrentStatusEffects, Health, Memory,
-	Player, Spellbook, SpellbookAbility, Vision,
+	Abilities, AbilityEvent, AbilityEventTarget, AbilityId, CurrentStatusEffects, Dead, Health,
+	Memory, Player, Spellbook, SpellbookAbility, Vision,
 };
 use crate::animation::Animation;
 use crate::util::{self, flip_sprite, OrderedNeighbors};
 use crate::{Destination, Drops, GameState, LevelCache, TurnState, GRID_SIZE};
 
 /// Enemy marker component.
-#[derive(Clone, Component, Copy, PartialEq, Eq)]
+#[derive(Clone, Component, Copy, PartialEq, Eq, Reflect)]
 pub(crate) enum Enemy {
 	/// Basic skeleton.
 	Base,
 	/// Skeleton caster.
 	Mage,
-	/// Skeleton warrior
+	/// Skeleton warrior.
 	Warrior,
+	/// Necromancer.
+	Necromancer,
 }
 
 impl Enemy {
 	/// Return idle [`Animation`].
 	pub(crate) fn idle_animation(self) -> Animation {
 		match self {
-			Self::Base | Self::Mage | Self::Warrior => Animation {
+			Self::Base | Self::Mage | Self::Warrior | Self::Necromancer => Animation {
 				timer:     Timer::from_seconds(0.25, TimerMode::Repeating),
 				first:     0,
 				last:      3,
@@ -71,6 +72,13 @@ impl Enemy {
 				))),
 			},
 			Self::Warrior => Animation {
+				timer:     Timer::from_seconds(0.1, TimerMode::Repeating),
+				first:     9,
+				last:      14,
+				repeating: true,
+				anchor:    None,
+			},
+			Enemy::Necromancer => Animation {
 				timer:     Timer::from_seconds(0.1, TimerMode::Repeating),
 				first:     9,
 				last:      14,
@@ -112,6 +120,13 @@ impl Enemy {
 					0.,
 					-(1. / 46. * ((46. - 32.) / 2.)),
 				))),
+			},
+			Self::Necromancer => Animation {
+				timer:     Timer::from_seconds(0.125, TimerMode::Repeating),
+				first:     18,
+				last:      23,
+				repeating: false,
+				anchor:    None,
 			},
 		}
 	}
@@ -268,6 +283,49 @@ impl Default for WarriorSkeletonBundle {
 	}
 }
 
+/// Warrior skeleton bundle.
+#[derive(Bundle, LdtkEntity)]
+pub(crate) struct NecromancerEnemyBundle {
+	/// Enemy marker component.
+	enemy:               Enemy,
+	/// Health of the enemy.
+	#[from_entity_instance]
+	health:              Health,
+	/// Abilities the enemy can perform.
+	abilities:           Spellbook,
+	#[from_entity_instance]
+	/// A list of items this enemy drops on death.
+	drops:               Drops,
+	/// Sprite bundle.
+	#[sprite_sheet_bundle]
+	sprite_sheet_bundle: LdtkSpriteSheetBundle,
+	/// enemy grid coordinates.
+	#[grid_coords]
+	grid_coords:         GridCoords,
+	/// Animation.
+	animation:           Animation,
+	/// Which tiles the enemy can see.
+	vision:              Vision,
+	/// Active [`StatusEffects`].
+	effects:             CurrentStatusEffects,
+}
+
+impl Default for NecromancerEnemyBundle {
+	fn default() -> Self {
+		Self {
+			enemy:               Enemy::Necromancer,
+			health:              Health::default(),
+			abilities:           Spellbook::necromancer(),
+			drops:               Drops::default(),
+			sprite_sheet_bundle: LdtkSpriteSheetBundle::default(),
+			grid_coords:         GridCoords::default(),
+			animation:           Enemy::Warrior.idle_animation(),
+			vision:              Vision::new(4),
+			effects:             CurrentStatusEffects::default(),
+		}
+	}
+}
+
 /// Moves enemies when its their turn.
 #[expect(
 	clippy::cognitive_complexity,
@@ -299,7 +357,7 @@ pub(crate) fn move_enemies(
 			&mut Visibility,
 			&mut Vision,
 		),
-		(Without<Player>, Without<Dead>)
+		(Without<Player>, Without<Dead>),
 	>,
 	mut cast_ability: EventWriter<'_, AbilityEvent>,
 ) {
@@ -403,7 +461,7 @@ pub(crate) fn move_enemies(
 					continue;
 				}
 			}
-			Enemy::Mage => {
+			Enemy::Mage | Enemy::Necromancer => {
 				let ability_id = enemy_spellbook.autoattack_ranged.expect(
 					"mage skeleton has to have a ranged autoattack
 				",
@@ -457,7 +515,7 @@ pub(crate) fn move_enemies(
 											pos.into(),
 											&all_enemy_pos,
 										);
-										(matches!(walkable, Destination::Walkable)
+										(matches!(walkable, Destination::Walkable | Destination::Enemy)
 											&& pos != TilePos::from(*player_pos))
 										.then_some((pos, 1))
 									}) {
@@ -501,7 +559,7 @@ pub(crate) fn move_enemies(
 
 				// if we are JUST in range...
 				if in_range == 0 {
-					return;
+					continue;
 
 				// if we are closer than than we need to be ...
 				} else if in_range < 0 {

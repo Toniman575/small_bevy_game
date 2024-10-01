@@ -87,7 +87,7 @@ impl Abilities {
 					None,
 					Some(super::AbilityAnimation {
 						texture:  textures.teleport_animation.clone(),
-						duration: Duration::from_secs_f64(0.25),
+						duration: Duration::from_secs_f64(0.5),
 						scale:    0.5,
 						atlas:    Some((textures.teleport_animation_atlas.clone(), 6)),
 					}),
@@ -199,7 +199,12 @@ impl Abilities {
 					AbilityEffect::Damage(1),
 					Some(2),
 					None,
-					None,
+					Some(super::AbilityAnimation {
+						texture:  textures.arrow.clone(),
+						duration: Duration::from_secs_f64(0.2),
+						scale:    0.5,
+						atlas:    None,
+					}),
 				),
 			),
 			(
@@ -266,7 +271,7 @@ impl Abilities {
 				),
 			),
 			(
-				AbilityId(10),
+				AbilityId(16),
 				Ability::new(
 					String::from("Skeleton Slash"),
 					1,
@@ -275,6 +280,23 @@ impl Abilities {
 					None,
 					None,
 					None,
+				),
+			),
+			(
+				AbilityId(17),
+				Ability::new(
+					String::from("Cheat Teleport"),
+					50,
+					Some(0),
+					AbilityEffect::Teleport,
+					None,
+					None,
+					Some(super::AbilityAnimation {
+						texture:  textures.teleport_animation.clone(),
+						duration: Duration::from_secs_f64(0.5),
+						scale:    0.5,
+						atlas:    Some((textures.teleport_animation_atlas.clone(), 6)),
+					}),
 				),
 			),
 		]))

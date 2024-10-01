@@ -20,8 +20,8 @@ use line_drawing::WalkGrid;
 
 pub(crate) use self::abilities::Abilities;
 pub(crate) use self::enemy::{
-	add_boss_abilities, change_enemy_gridcoords, move_enemies, BaseSkeletonBundle, Boss, Enemy, MageSkeletonBundle,
-	WarriorSkeletonBundle,
+	add_boss_abilities, change_enemy_gridcoords, move_enemies, BaseSkeletonBundle, Boss, Enemy,
+	MageSkeletonBundle, NecromancerEnemyBundle, WarriorSkeletonBundle,
 };
 pub(crate) use self::player::{
 	cast_ability, door_interactions, player_movement, select_ability, Player, PlayerBundle,
@@ -332,6 +332,7 @@ impl Spellbook {
 				(AbilityId(1), SpellbookAbility::default()),
 				(AbilityId(14), SpellbookAbility::default()),
 				(AbilityId(15), SpellbookAbility::default()),
+				(AbilityId(17), SpellbookAbility::default()),
 			]),
 		}
 	}
@@ -361,17 +362,31 @@ impl Spellbook {
 		}
 	}
 
-	/// Default spellbook for knight skeletons.
+	/// Default spellbook for warrior skeletons.
 	fn warrior_skeleton() -> Self {
 		Self {
-			autoattack_melee:  Some(AbilityId(10)),
+			autoattack_melee:  Some(AbilityId(16)),
 			autoattack_ranged: Some(AbilityId(11)),
 			charge:            Some(AbilityId(13)),
 			teleport:          None,
 			abilities:         HashMap::from_iter([
-				(AbilityId(10), SpellbookAbility::default()),
+				(AbilityId(16), SpellbookAbility::default()),
 				(AbilityId(11), SpellbookAbility::default()),
 				(AbilityId(13), SpellbookAbility::default()),
+			]),
+		}
+	}
+
+	/// Default spellbook for Necromancer.
+	fn necromancer() -> Self {
+		Self {
+			autoattack_melee:  None,
+			autoattack_ranged: Some(AbilityId(12)),
+			charge:            None,
+			teleport:          Some(AbilityId(4)),
+			abilities:         HashMap::from_iter([
+				(AbilityId(12), SpellbookAbility::default()),
+				(AbilityId(4), SpellbookAbility::default()),
 			]),
 		}
 	}
@@ -410,7 +425,7 @@ pub(crate) fn handle_ability_event(
 			Has<Player>,
 			Has<Enemy>,
 		),
-		Without<Dead>
+		Without<Dead>,
 	>,
 	mut ability_events: EventReader<'_, '_, AbilityEvent>,
 	mut animation_state: ResMut<'_, TurnState>,
@@ -421,7 +436,7 @@ pub(crate) fn handle_ability_event(
 	for ability_event in ability_events.read() {
 		let (
 			caster_entity,
-			_,
+			caster_transform,
 			mut caster_grid_coord,
 			mut spellbook,
 			mut caster_sprite,
@@ -498,6 +513,43 @@ pub(crate) fn handle_ability_event(
 				}
 
 				*animation_state = TurnState::EnemiesWaiting;
+
+				if let Some(ability_animation) = &ability.animation {
+					if let Some(atlas) = &ability_animation.atlas {
+						commands.spawn((
+							AnimationAbility,
+							SpriteBundle {
+								texture: ability_animation.texture.clone(),
+								transform: Transform {
+									translation: utils::grid_coords_to_translation(
+										target_grid_coord,
+										IVec2::splat(GRID_SIZE),
+									)
+									.extend(caster_transform.translation.z),
+									rotation:    Quat::IDENTITY,
+									scale:       (Vec2::ONE * ability_animation.scale).extend(1.),
+								},
+								..SpriteBundle::default()
+							},
+							TextureAtlas {
+								layout: atlas.0.clone(),
+								index:  0,
+							},
+							Animation {
+								timer:     Timer::from_seconds(
+									(ability_animation.duration / atlas.1 as u32).as_secs_f32(),
+									TimerMode::Repeating,
+								),
+								first:     0,
+								last:      atlas.1,
+								repeating: false,
+								anchor:    None,
+							},
+						));
+					} else {
+						unimplemented!()
+					}
+				}
 
 				continue;
 			}
@@ -733,7 +785,9 @@ pub(crate) fn handle_ability_event(
 			(target_transform.translation.xy() - caster_transform.translation.xy()).normalize();
 		let rotate_to_enemy = Quat::from_rotation_arc(Vec3::Y, to_enemy.extend(0.));
 		if let Some(ability_animation) = &ability.animation {
-			if let AbilityEffect::Damage(_) = &ability.effect {
+			if let AbilityEffect::Damage(_) | AbilityEffect::Slam(_) | AbilityEffect::Charge(_) =
+				&ability.effect
+			{
 				if let Some(atlas) = &ability_animation.atlas {
 					commands.spawn((
 						AnimationAbility,
@@ -979,6 +1033,7 @@ pub(crate) fn death(
 	mut level_cache: ResMut<'_, LevelCache>,
 	mut game_state: ResMut<'_, GameState>,
 	mut turn_state: ResMut<'_, TurnState>,
+	mut level_selection: ResMut<'_, LevelSelection>,
 ) {
 	let Ok((player_vision, mut player_spellbook)) = player_q.get_single_mut() else {
 		return;
@@ -1015,6 +1070,8 @@ pub(crate) fn death(
 			game_state.player_items.clear();
 			game_state.visited_tiles.clear();
 			*turn_state = TurnState::PlayerWaiting;
+			*level_selection =
+				LevelSelection::Iid(LevelIid::new("32dd4990-25d0-11ef-be0e-2bd40eab6b07"));
 			return;
 		} else {
 			unreachable!("player can't be enemy and visa versa")

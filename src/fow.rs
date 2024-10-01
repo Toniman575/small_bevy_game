@@ -37,6 +37,7 @@ pub(crate) fn generate_fov(
 				let coord = GridCoords::new(x, y);
 
 				level_cache.walls.contains(&coord)
+					|| level_cache.doors.contains_key(&coord)
 					|| u32::try_from(util::euclidean_distance(coord, *origin)).unwrap()
 						> vision.range.into()
 			},
