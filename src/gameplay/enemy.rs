@@ -477,6 +477,32 @@ pub(crate) fn move_enemies(
 						.expect("abilityid has to exist")
 						.range as i32;
 
+				let mut fov = true;
+
+				let path = WalkGrid::new(
+					IVec2::from(*enemy_pos).into(),
+					IVec2::from(*player_pos).into(),
+				)
+				.steps()
+				.map(|(start, end)| {
+					(
+						GridCoords::from(IVec2::from(start)),
+						GridCoords::from(IVec2::from(end)),
+					)
+				});
+
+				for (start, end) in path.skip(1) {
+					if level_cache.walls.contains(&start) {
+						fov = false;
+						break;
+					}
+
+					// reached last one
+					if end == *player_pos {
+						break;
+					}
+				}
+
 				let on_cooldown = enemy_spellbook
 					.abilities
 					.get(&ability_id)
@@ -484,8 +510,8 @@ pub(crate) fn move_enemies(
 					.last_cast
 					.is_some();
 
-				// if spell is off cooldown and we are in range...
-				if !on_cooldown && in_range <= 0 {
+				// if spell is off cooldown and we are in range and can see the player...
+				if !on_cooldown && in_range <= 0 && fov {
 					cast_ability.send(AbilityEvent::new(
 						enemy_entity,
 						ability_id,

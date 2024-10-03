@@ -1,0 +1,6 @@
+[target.'cfg(target_family = "wasm")']
+rustflags = [
+	"--cfg=web_sys_unstable_apis",
+	"-Ctarget-feature=+bulk-memory,+nontrapping-fptoint,+reference-types,+simd128",
+	"-Clink-arg=--max-memory=4294967296",
+]

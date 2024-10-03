@@ -29,6 +29,7 @@
 	clippy::unimplemented,
 	clippy::wildcard_imports
 )]
+#![windows_subsystem = "windows"]
 
 mod animation;
 mod fow;
@@ -1556,10 +1557,19 @@ fn player_effect_ui(
 		});
 }
 
+#[expect(clippy::too_many_lines)]
 fn main() {
 	App::new()
 		.add_plugins((
-			DefaultPlugins.set(ImagePlugin::default_nearest()),
+			DefaultPlugins
+				.set(ImagePlugin::default_nearest())
+				.set(WindowPlugin {
+					primary_window: Some(Window {
+						fit_canvas_to_parent: true,
+						..Window::default()
+					}),
+					..WindowPlugin::default()
+				}),
 			PanCamPlugin,
 			TilemapPlugin,
 			LdtkPlugin,
@@ -1573,7 +1583,7 @@ fn main() {
 		.insert_resource(Msaa::Off)
 		.add_systems(Startup, startup)
 		.add_systems(First, level_spawn)
-		.add_systems(PreUpdate, (fix_sprite_layout, debug, generate_fov))
+		.add_systems(PreUpdate, (fix_sprite_layout, generate_fov))
 		.add_systems(
 			Update,
 			(
@@ -1603,7 +1613,7 @@ fn main() {
 			(
 				tick_cooldowns,
 				tick_status_effects,
-				(((turn_ui, item_ui, ability_ui), player_effect_ui).chain())
+				(((item_ui, ability_ui), player_effect_ui).chain())
 					.before(EguiSet::ProcessOutput),
 				animation::animate,
 				(

@@ -331,8 +331,6 @@ impl Spellbook {
 				(AbilityId(0), SpellbookAbility::default()),
 				(AbilityId(1), SpellbookAbility::default()),
 				(AbilityId(14), SpellbookAbility::default()),
-				(AbilityId(15), SpellbookAbility::default()),
-				(AbilityId(17), SpellbookAbility::default()),
 			]),
 		}
 	}
