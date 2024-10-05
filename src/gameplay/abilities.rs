@@ -24,7 +24,7 @@ impl Abilities {
 					String::from("Stab"),
 					1,
 					None,
-					AbilityEffect::Damage(10),
+					AbilityEffect::Damage(8),
 					None,
 					Some(TextureIcon::AutoAttack),
 					None,
@@ -54,7 +54,7 @@ impl Abilities {
 					1,
 					None,
 					AbilityEffect::Damage(15),
-					Some(5),
+					Some(3),
 					Some(TextureIcon::Slash),
 					Some(super::AbilityAnimation {
 						texture:  textures.slash_animation.clone(),
