@@ -40,6 +40,7 @@ use std::cmp::Ordering;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 
+use bevy::asset::AssetMetaCheck;
 use bevy::color::palettes::basic::*;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
@@ -1569,6 +1570,10 @@ fn main() {
 						..Window::default()
 					}),
 					..WindowPlugin::default()
+				})
+				.set(AssetPlugin {
+					meta_check: AssetMetaCheck::Never,
+					..AssetPlugin::default()
 				}),
 			PanCamPlugin,
 			TilemapPlugin,
@@ -1613,8 +1618,7 @@ fn main() {
 			(
 				tick_cooldowns,
 				tick_status_effects,
-				(((item_ui, ability_ui), player_effect_ui).chain())
-					.before(EguiSet::ProcessOutput),
+				(((item_ui, ability_ui), player_effect_ui).chain()).before(EguiSet::ProcessOutput),
 				animation::animate,
 				(
 					animation::finish_animation,
